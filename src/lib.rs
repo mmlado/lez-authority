@@ -44,6 +44,12 @@ pub enum AuthorityError {
     NotInstalled,
     /// The slot already holds someone.
     AlreadyInstalled,
+    /// No nominee is pending.
+    NoNomination,
+    /// The caller is not the pending nominee.
+    NotNominee,
+    /// A nominee reached through a program did not prove itself with the seed that derives it.
+    SeedProofFailed,
     /// The slot was renounced, for good.
     Renounced,
     /// The caller is not the holder.
@@ -74,6 +80,11 @@ impl AuthorityError {
             }
             Self::NotInstalled => format!("no {role} is installed"),
             Self::AlreadyInstalled => format!("the {role} is already installed"),
+            Self::NoNomination => format!("no {role} nominee is pending"),
+            Self::NotNominee => format!("the signing account is not the nominated {role}"),
+            Self::SeedProofFailed => {
+                "a nominee reached through a program must prove itself with the seed that derives it under that program".into()
+            }
             Self::Renounced => format!("the {role} is renounced"),
             Self::NotHolder => format!("the signing account is not the {role}"),
             Self::ViaNotAllowed => {
@@ -118,24 +129,48 @@ impl Caller {
     }
 }
 
-/// One role's slot: nobody yet, a holder, or renounced for good.
+/// One role's slot: nobody yet, a holder with at most one pending nominee, or renounced
+/// for good.
 #[derive(BorshSerialize, BorshDeserialize, Clone, Debug, Default, PartialEq, Eq)]
 pub enum AuthoritySlot {
     /// No holder yet. The state of a config nobody initialized.
     #[default]
     Unset,
-    /// Held.
-    Held(Holder),
+    /// Held, with the holder's standing offer of the role to `nominee` if any.
+    Held {
+        /// The holder.
+        holder: Holder,
+        /// The account the holder nominated, until it accepts or the offer changes.
+        nominee: Option<AccountId>,
+    },
     /// Renounced. Terminal.
     Renounced,
 }
 
 impl AuthoritySlot {
+    /// A slot held by `holder` with no nominee.
+    #[must_use]
+    pub fn held(holder: Holder) -> Self {
+        Self::Held {
+            holder,
+            nominee: None,
+        }
+    }
+
     /// The holder, or `None` when unset or renounced.
     #[must_use]
     pub fn holder(&self) -> Option<Holder> {
         match self {
-            Self::Held(holder) => Some(*holder),
+            Self::Held { holder, .. } => Some(*holder),
+            Self::Unset | Self::Renounced => None,
+        }
+    }
+
+    /// The pending nominee, if any.
+    #[must_use]
+    pub fn nominee(&self) -> Option<AccountId> {
+        match self {
+            Self::Held { nominee, .. } => *nominee,
             Self::Unset | Self::Renounced => None,
         }
     }
@@ -149,7 +184,7 @@ impl AuthoritySlot {
         let holder = match self {
             Self::Unset => return Err(AuthorityError::NotInstalled),
             Self::Renounced => return Err(AuthorityError::Renounced),
-            Self::Held(holder) => holder,
+            Self::Held { holder, .. } => holder,
         };
         if holder.account != caller.account {
             return Err(AuthorityError::NotHolder);
@@ -182,7 +217,19 @@ pub trait HasSlot<R: Role> {
 pub enum Op {
     /// Makes the sender the holder of an unset slot.
     Init,
-    /// Empties the slot for good. The sender must be the holder.
+    /// The holder offers the role to `next`. The all-zero id cancels, a later offer replaces
+    /// an earlier one. Nothing moves until `next` accepts.
+    Nominate {
+        /// The account offered the role.
+        next: AccountId,
+    },
+    /// The pending nominee takes the role, through its own seat. A key accepts at top level.
+    /// A PDA accepts through the program that derives it, and carries that seed as proof.
+    Accept {
+        /// The seed that derives the nominee under the program that reached its seat.
+        pda_seed: Option<PdaSeed>,
+    },
+    /// Empties the slot for good, nominee included. The sender must be the holder.
     Renounce,
 }
 
@@ -244,17 +291,54 @@ impl Ctx {
         let caller = *self.vouched();
         match slot {
             AuthoritySlot::Unset => {}
-            AuthoritySlot::Held(_) => self.fail(&AuthorityError::AlreadyInstalled),
+            AuthoritySlot::Held { .. } => self.fail(&AuthorityError::AlreadyInstalled),
             AuthoritySlot::Renounced => self.fail(&AuthorityError::Renounced),
         }
-        *slot = AuthoritySlot::Held(Holder {
+        *slot = AuthoritySlot::held(Holder {
             account: caller.account,
             via: caller.via,
         });
         self.expected = Some(slot.clone());
     }
 
-    /// Empties the slot for good. The sender must be the holder.
+    /// The sender, who must be the holder, offers the role to `next`. The all-zero id cancels.
+    pub fn nominate(&mut self, slot: &mut AuthoritySlot, next: AccountId) {
+        self.require(slot);
+        if let AuthoritySlot::Held { nominee, .. } = slot {
+            *nominee = (next != AccountId::default()).then_some(next);
+        }
+        self.expected = Some(slot.clone());
+    }
+
+    /// The sender, who must be the pending nominee, takes the role. A key at top level needs
+    /// no seed. A PDA reached through its program must carry the seed that derives it there.
+    pub fn accept(&mut self, slot: &mut AuthoritySlot, pda_seed: Option<PdaSeed>) {
+        let caller = *self.vouched();
+        let pending = match slot {
+            AuthoritySlot::Unset => self.fail(&AuthorityError::NotInstalled),
+            AuthoritySlot::Renounced => self.fail(&AuthorityError::Renounced),
+            AuthoritySlot::Held { nominee, .. } => *nominee,
+        };
+        let Some(nominee) = pending else {
+            self.fail(&AuthorityError::NoNomination)
+        };
+        if nominee != caller.account {
+            self.fail(&AuthorityError::NotNominee);
+        }
+        match (caller.via, pda_seed) {
+            (None, None) => {}
+            (Some(program), Some(seed))
+                if AccountId::for_public_pda(&program, &seed) == caller.account => {}
+            _ => self.fail(&AuthorityError::SeedProofFailed),
+        }
+        *slot = AuthoritySlot::held(Holder {
+            account: caller.account,
+            via: caller.via,
+        });
+        self.expected = Some(slot.clone());
+    }
+
+    /// Empties the slot for good, nominee included. The sender must be the holder.
     pub fn renounce(&mut self, slot: &mut AuthoritySlot) {
         self.require(slot);
         *slot = AuthoritySlot::Renounced;
@@ -381,6 +465,8 @@ where
     };
     match op {
         Ok(Op::Init) => ctx.install(HasSlot::<R>::slot_mut(&mut config)),
+        Ok(Op::Nominate { next }) => ctx.nominate(HasSlot::<R>::slot_mut(&mut config), next),
+        Ok(Op::Accept { pda_seed }) => ctx.accept(HasSlot::<R>::slot_mut(&mut config), pda_seed),
         Ok(Op::Renounce) => ctx.renounce(HasSlot::<R>::slot_mut(&mut config)),
         Err(message) => handler(&mut ctx, &mut config, message),
     }
@@ -434,7 +520,7 @@ mod tests {
 
     #[test]
     fn a_key_holder_acts_at_top_level_only() {
-        let slot = AuthoritySlot::Held(Holder { account: KEY, via: None });
+        let slot = AuthoritySlot::held(Holder { account: KEY, via: None });
         assert_eq!(slot.check(&caller(KEY, None)), Ok(()));
         assert_eq!(slot.check(&caller(KEY, Some(GOVERNANCE))), Err(AuthorityError::ViaNotAllowed));
         assert_eq!(slot.check(&caller(OTHER, None)), Err(AuthorityError::NotHolder));
@@ -442,7 +528,7 @@ mod tests {
 
     #[test]
     fn a_pda_holder_acts_through_its_program_only() {
-        let slot = AuthoritySlot::Held(Holder { account: KEY, via: Some(GOVERNANCE) });
+        let slot = AuthoritySlot::held(Holder { account: KEY, via: Some(GOVERNANCE) });
         assert_eq!(slot.check(&caller(KEY, Some(GOVERNANCE))), Ok(()));
         assert_eq!(slot.check(&caller(KEY, None)), Err(AuthorityError::ViaNotAllowed));
         assert_eq!(slot.check(&caller(KEY, Some(OTHER))), Err(AuthorityError::ViaNotAllowed));
@@ -459,22 +545,103 @@ mod tests {
         let mut slot = AuthoritySlot::Unset;
         let mut ctx = ctx(Some(caller(KEY, Some(GOVERNANCE))));
         ctx.install(&mut slot);
-        let held = AuthoritySlot::Held(Holder { account: KEY, via: Some(GOVERNANCE) });
+        let held = AuthoritySlot::held(Holder { account: KEY, via: Some(GOVERNANCE) });
         assert_eq!(slot, held);
         assert_eq!(ctx.expected, Some(held));
+    }
+
+    fn held_by_key_with(nominee: Option<AccountId>) -> AuthoritySlot {
+        AuthoritySlot::Held {
+            holder: Holder { account: KEY, via: None },
+            nominee,
+        }
+    }
+
+    #[test]
+    fn nominate_records_replaces_and_cancels() {
+        let mut slot = held_by_key_with(None);
+        let mut ctx = ctx(Some(caller(KEY, None)));
+        ctx.nominate(&mut slot, OTHER);
+        assert_eq!(slot.nominee(), Some(OTHER));
+        ctx.nominate(&mut slot, GOVERNANCE);
+        assert_eq!(slot.nominee(), Some(GOVERNANCE));
+        ctx.nominate(&mut slot, AccountId::default());
+        assert_eq!(slot.nominee(), None);
+        assert_eq!(slot.holder(), Some(Holder { account: KEY, via: None }));
+    }
+
+    #[test]
+    #[should_panic(expected = "the signing account is not the holder")]
+    fn only_the_holder_nominates() {
+        let mut slot = held_by_key_with(None);
+        ctx(Some(caller(OTHER, None))).nominate(&mut slot, OTHER);
+    }
+
+    #[test]
+    fn a_key_nominee_accepts_at_top_level() {
+        let mut slot = held_by_key_with(Some(OTHER));
+        ctx(Some(caller(OTHER, None))).accept(&mut slot, None);
+        assert_eq!(slot, AuthoritySlot::held(Holder { account: OTHER, via: None }));
+    }
+
+    #[test]
+    fn a_pda_nominee_accepts_through_its_program_with_the_seed() {
+        let seed = PdaSeed::new([9; 32]);
+        let pda = AccountId::for_public_pda(&GOVERNANCE, &seed);
+        let mut slot = held_by_key_with(Some(pda));
+        ctx(Some(caller(pda, Some(GOVERNANCE)))).accept(&mut slot, Some(seed));
+        assert_eq!(slot, AuthoritySlot::held(Holder { account: pda, via: Some(GOVERNANCE) }));
+    }
+
+    #[test]
+    #[should_panic(expected = "must prove itself with the seed")]
+    fn a_pda_nominee_with_the_wrong_seed_is_refused() {
+        let pda = AccountId::for_public_pda(&GOVERNANCE, &PdaSeed::new([9; 32]));
+        let mut slot = held_by_key_with(Some(pda));
+        ctx(Some(caller(pda, Some(GOVERNANCE)))).accept(&mut slot, Some(PdaSeed::new([8; 32])));
+    }
+
+    #[test]
+    #[should_panic(expected = "must prove itself with the seed")]
+    fn a_nominee_reached_through_a_program_without_a_seed_is_refused() {
+        let mut slot = held_by_key_with(Some(OTHER));
+        ctx(Some(caller(OTHER, Some(GOVERNANCE)))).accept(&mut slot, None);
+    }
+
+    #[test]
+    #[should_panic(expected = "the signing account is not the nominated holder")]
+    fn only_the_nominee_accepts() {
+        let mut slot = held_by_key_with(Some(OTHER));
+        ctx(Some(caller(GOVERNANCE, None))).accept(&mut slot, None);
+    }
+
+    #[test]
+    #[should_panic(expected = "no holder nominee is pending")]
+    fn accept_without_a_nomination_is_refused() {
+        let mut slot = held_by_key_with(None);
+        ctx(Some(caller(OTHER, None))).accept(&mut slot, None);
+    }
+
+    #[test]
+    #[should_panic(expected = "the holder is renounced")]
+    fn accept_after_renounce_is_refused() {
+        let mut slot = held_by_key_with(Some(OTHER));
+        ctx(Some(caller(KEY, None))).renounce(&mut slot);
+        assert_eq!(slot, AuthoritySlot::Renounced);
+        ctx(Some(caller(OTHER, None))).accept(&mut slot, None);
     }
 
     #[test]
     #[should_panic(expected = "the holder is already installed")]
     fn install_refuses_a_held_slot() {
-        let mut slot = AuthoritySlot::Held(Holder { account: KEY, via: None });
+        let mut slot = AuthoritySlot::held(Holder { account: KEY, via: None });
         ctx(Some(caller(OTHER, None))).install(&mut slot);
     }
 
     #[test]
     #[should_panic(expected = "must go through the sender's own actor")]
     fn require_refuses_a_message_that_skipped_the_seat() {
-        let slot = AuthoritySlot::Held(Holder { account: KEY, via: None });
+        let slot = AuthoritySlot::held(Holder { account: KEY, via: None });
         ctx(None).require(&slot);
     }
 }
