@@ -133,7 +133,11 @@ impl AuthorityError {
     /// The panic text: the crate, the role, the code, the sentence.
     #[must_use]
     pub fn text(&self, role: &str) -> String {
-        format!("lez-authority/{role} E{}: {}", self.code(), self.describe(role))
+        format!(
+            "lez-authority/{role} E{}: {}",
+            self.code(),
+            self.describe(role)
+        )
     }
 
     /// The sentence, naming the role.
@@ -823,10 +827,17 @@ mod tests {
         for (error, code) in &expected {
             assert_eq!(error.code(), *code, "{error:?}");
         }
-        let mut codes: Vec<u16> = AuthorityError::ALL.iter().map(AuthorityError::code).collect();
+        let mut codes: Vec<u16> = AuthorityError::ALL
+            .iter()
+            .map(AuthorityError::code)
+            .collect();
         codes.sort_unstable();
         codes.dedup();
-        assert_eq!(codes.len(), AuthorityError::ALL.len(), "two refusals share a code");
+        assert_eq!(
+            codes.len(),
+            AuthorityError::ALL.len(),
+            "two refusals share a code"
+        );
         assert_eq!(
             AuthorityError::NotHolder.text("admin"),
             "lez-authority/admin E103: the signing account is not the admin"
@@ -835,24 +846,48 @@ mod tests {
 
     #[test]
     fn a_key_holder_acts_at_top_level_only() {
-        let slot = AuthoritySlot::held(Holder { account: KEY, via: None });
+        let slot = AuthoritySlot::held(Holder {
+            account: KEY,
+            via: None,
+        });
         assert_eq!(slot.check(&caller(KEY, None)), Ok(()));
-        assert_eq!(slot.check(&caller(KEY, Some(GOVERNANCE))), Err(AuthorityError::ViaNotAllowed));
-        assert_eq!(slot.check(&caller(OTHER, None)), Err(AuthorityError::NotHolder));
+        assert_eq!(
+            slot.check(&caller(KEY, Some(GOVERNANCE))),
+            Err(AuthorityError::ViaNotAllowed)
+        );
+        assert_eq!(
+            slot.check(&caller(OTHER, None)),
+            Err(AuthorityError::NotHolder)
+        );
     }
 
     #[test]
     fn a_pda_holder_acts_through_its_program_only() {
-        let slot = AuthoritySlot::held(Holder { account: KEY, via: Some(GOVERNANCE) });
+        let slot = AuthoritySlot::held(Holder {
+            account: KEY,
+            via: Some(GOVERNANCE),
+        });
         assert_eq!(slot.check(&caller(KEY, Some(GOVERNANCE))), Ok(()));
-        assert_eq!(slot.check(&caller(KEY, None)), Err(AuthorityError::ViaNotAllowed));
-        assert_eq!(slot.check(&caller(KEY, Some(OTHER))), Err(AuthorityError::ViaNotAllowed));
+        assert_eq!(
+            slot.check(&caller(KEY, None)),
+            Err(AuthorityError::ViaNotAllowed)
+        );
+        assert_eq!(
+            slot.check(&caller(KEY, Some(OTHER))),
+            Err(AuthorityError::ViaNotAllowed)
+        );
     }
 
     #[test]
     fn unset_and_renounced_slots_refuse_everyone() {
-        assert_eq!(AuthoritySlot::Unset.check(&caller(KEY, None)), Err(AuthorityError::NotInstalled));
-        assert_eq!(AuthoritySlot::Renounced.check(&caller(KEY, None)), Err(AuthorityError::Renounced));
+        assert_eq!(
+            AuthoritySlot::Unset.check(&caller(KEY, None)),
+            Err(AuthorityError::NotInstalled)
+        );
+        assert_eq!(
+            AuthoritySlot::Renounced.check(&caller(KEY, None)),
+            Err(AuthorityError::Renounced)
+        );
     }
 
     #[test]
@@ -860,7 +895,10 @@ mod tests {
         let mut slot = AuthoritySlot::Unset;
         let mut ctx = ctx(Some(caller(PROGRAM, None)));
         ctx.install(&mut slot);
-        let held = AuthoritySlot::held(Holder { account: PROGRAM, via: None });
+        let held = AuthoritySlot::held(Holder {
+            account: PROGRAM,
+            via: None,
+        });
         assert_eq!(slot, held);
         assert_eq!(ctx.expected, Some(held));
     }
@@ -881,18 +919,28 @@ mod tests {
     fn with_a_genesis_key_only_that_key_installs() {
         let mut slot = AuthoritySlot::Unset;
         ctx_with(Some(caller(KEY, None)), InitGate::Genesis(KEY)).install(&mut slot);
-        assert_eq!(slot, AuthoritySlot::held(Holder { account: KEY, via: None }));
+        assert_eq!(
+            slot,
+            AuthoritySlot::held(Holder {
+                account: KEY,
+                via: None
+            })
+        );
     }
 
     #[test]
     #[should_panic(expected = "only the genesis key installs the first holder")]
     fn with_a_genesis_key_the_deployer_is_refused() {
-        ctx_with(Some(caller(PROGRAM, None)), InitGate::Genesis(KEY)).install(&mut AuthoritySlot::Unset);
+        ctx_with(Some(caller(PROGRAM, None)), InitGate::Genesis(KEY))
+            .install(&mut AuthoritySlot::Unset);
     }
 
     fn held_by_key_with(nominee: Option<AccountId>) -> AuthoritySlot {
         AuthoritySlot::Held {
-            holder: Holder { account: KEY, via: None },
+            holder: Holder {
+                account: KEY,
+                via: None,
+            },
             nominee,
         }
     }
@@ -907,7 +955,13 @@ mod tests {
         assert_eq!(slot.nominee(), Some(GOVERNANCE));
         ctx.nominate(&mut slot, AccountId::default());
         assert_eq!(slot.nominee(), None);
-        assert_eq!(slot.holder(), Some(Holder { account: KEY, via: None }));
+        assert_eq!(
+            slot.holder(),
+            Some(Holder {
+                account: KEY,
+                via: None
+            })
+        );
     }
 
     #[test]
@@ -921,7 +975,13 @@ mod tests {
     fn a_key_nominee_accepts_at_top_level() {
         let mut slot = held_by_key_with(Some(OTHER));
         ctx(Some(caller(OTHER, None))).accept(&mut slot, None);
-        assert_eq!(slot, AuthoritySlot::held(Holder { account: OTHER, via: None }));
+        assert_eq!(
+            slot,
+            AuthoritySlot::held(Holder {
+                account: OTHER,
+                via: None
+            })
+        );
     }
 
     #[test]
@@ -930,7 +990,13 @@ mod tests {
         let pda = AccountId::for_public_pda(&GOVERNANCE, &seed);
         let mut slot = held_by_key_with(Some(pda));
         ctx(Some(caller(pda, Some(GOVERNANCE)))).accept(&mut slot, Some(seed));
-        assert_eq!(slot, AuthoritySlot::held(Holder { account: pda, via: Some(GOVERNANCE) }));
+        assert_eq!(
+            slot,
+            AuthoritySlot::held(Holder {
+                account: pda,
+                via: Some(GOVERNANCE)
+            })
+        );
     }
 
     #[test]
@@ -974,14 +1040,20 @@ mod tests {
     #[test]
     #[should_panic(expected = "the holder is already installed")]
     fn install_refuses_a_held_slot() {
-        let mut slot = AuthoritySlot::held(Holder { account: KEY, via: None });
+        let mut slot = AuthoritySlot::held(Holder {
+            account: KEY,
+            via: None,
+        });
         ctx(Some(caller(PROGRAM, None))).install(&mut slot);
     }
 
     #[test]
     #[should_panic(expected = "must go through the sender's own actor")]
     fn require_refuses_a_message_that_skipped_the_seat() {
-        let slot = AuthoritySlot::held(Holder { account: KEY, via: None });
+        let slot = AuthoritySlot::held(Holder {
+            account: KEY,
+            via: None,
+        });
         ctx(None).require(&slot);
     }
 }
