@@ -23,7 +23,10 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use lee_core::account::{AccountId, Actor};
 use lee_core::program::{PdaSeed, ReceiveInput, Response};
 
-/// Why a message was refused. It becomes a panic, which is how a handler fails on LEZ.
+/// Why a message was refused. It becomes a panic, which is how a handler fails on LEZ, with
+/// a stable code in front of the sentence: `lez-authority/<role> E103: the signing account
+/// is not the <role>`. A code never changes meaning. New refusals take new codes, retired
+/// ones keep theirs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuthorityError {
     /// The config account holds no state yet, and the message is not the install operation.
@@ -65,7 +68,60 @@ pub enum AuthorityError {
 }
 
 impl AuthorityError {
-    /// The panic text, naming the role.
+    /// Every refusal, for the table test.
+    pub const ALL: [Self; 18] = [
+        Self::NotInitialized,
+        Self::ConfigDoesNotDecode,
+        Self::MessageDoesNotDecode,
+        Self::MissingSignature,
+        Self::NotOwnProgram,
+        Self::ForwardedNotAtConfig,
+        Self::NotThroughSeat,
+        Self::NotInstalled,
+        Self::AlreadyInstalled,
+        Self::NotDeployer,
+        Self::NotGenesis,
+        Self::NoNomination,
+        Self::NotNominee,
+        Self::SeedProofFailed,
+        Self::Renounced,
+        Self::NotHolder,
+        Self::ViaNotAllowed,
+        Self::SlotChanged,
+    ];
+
+    /// The stable code. Append-only: a number is never reused or renumbered.
+    #[must_use]
+    pub const fn code(&self) -> u16 {
+        match self {
+            Self::NotInitialized => 101,
+            Self::Renounced => 102,
+            Self::NotHolder => 103,
+            Self::MissingSignature => 104,
+            Self::SeedProofFailed => 107,
+            Self::MessageDoesNotDecode => 108,
+            Self::ConfigDoesNotDecode => 109,
+            Self::NoNomination => 113,
+            Self::NotNominee => 114,
+            Self::NotGenesis => 115,
+            Self::NotDeployer => 117,
+            Self::AlreadyInstalled => 118,
+            Self::NotOwnProgram => 119,
+            Self::ViaNotAllowed => 120,
+            Self::ForwardedNotAtConfig => 121,
+            Self::NotThroughSeat => 122,
+            Self::SlotChanged => 126,
+            Self::NotInstalled => 131,
+        }
+    }
+
+    /// The panic text: the crate, the role, the code, the sentence.
+    #[must_use]
+    pub fn text(&self, role: &str) -> String {
+        format!("lez-authority/{role} E{}: {}", self.code(), self.describe(role))
+    }
+
+    /// The sentence, naming the role.
     #[must_use]
     pub fn describe(&self, role: &str) -> String {
         match self {
@@ -384,7 +440,7 @@ impl Ctx {
     }
 
     fn fail(&self, error: &AuthorityError) -> ! {
-        panic!("{}", error.describe(self.role))
+        panic!("{}", error.text(self.role))
     }
 }
 
@@ -421,7 +477,7 @@ pub const fn seed(label: &[u8]) -> PdaSeed {
 /// against what the context allowed. The config is written back either way.
 ///
 /// # Panics
-/// On every refusal, with [`AuthorityError::describe`] as the text.
+/// On every refusal, with [`AuthorityError::text`] as the text.
 pub fn guard<R, C, M>(
     input: &ReceiveInput,
     seed: &PdaSeed,
@@ -436,7 +492,7 @@ where
 {
     match try_guard::<R, C, M>(input, seed, gate, message, handler) {
         Ok(response) => response,
-        Err(error) => panic!("{}", error.describe(R::NAME)),
+        Err(error) => panic!("{}", error.text(R::NAME)),
     }
 }
 
@@ -560,6 +616,41 @@ mod tests {
             gate,
             expected: None,
         }
+    }
+
+    #[test]
+    fn codes_are_stable() {
+        let expected: [(AuthorityError, u16); 18] = [
+            (AuthorityError::NotInitialized, 101),
+            (AuthorityError::Renounced, 102),
+            (AuthorityError::NotHolder, 103),
+            (AuthorityError::MissingSignature, 104),
+            (AuthorityError::SeedProofFailed, 107),
+            (AuthorityError::MessageDoesNotDecode, 108),
+            (AuthorityError::ConfigDoesNotDecode, 109),
+            (AuthorityError::NoNomination, 113),
+            (AuthorityError::NotNominee, 114),
+            (AuthorityError::NotGenesis, 115),
+            (AuthorityError::NotDeployer, 117),
+            (AuthorityError::AlreadyInstalled, 118),
+            (AuthorityError::NotOwnProgram, 119),
+            (AuthorityError::ViaNotAllowed, 120),
+            (AuthorityError::ForwardedNotAtConfig, 121),
+            (AuthorityError::NotThroughSeat, 122),
+            (AuthorityError::SlotChanged, 126),
+            (AuthorityError::NotInstalled, 131),
+        ];
+        for (error, code) in &expected {
+            assert_eq!(error.code(), *code, "{error:?}");
+        }
+        let mut codes: Vec<u16> = AuthorityError::ALL.iter().map(AuthorityError::code).collect();
+        codes.sort_unstable();
+        codes.dedup();
+        assert_eq!(codes.len(), AuthorityError::ALL.len(), "two refusals share a code");
+        assert_eq!(
+            AuthorityError::NotHolder.text("admin"),
+            "lez-authority/admin E103: the signing account is not the admin"
+        );
     }
 
     #[test]
