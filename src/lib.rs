@@ -8,11 +8,12 @@
 //! own actors reach it with `from_own_program()`, and every one of them runs the same
 //! code: [`guard`].
 //!
-//! The program keeps its own message enum and its own handler. The enum hosts two library
+//! The program keeps its own message enum and its own handler. The enum hosts library
 //! variants through [`Hosts`]: the management operations [`Op`], which the guard runs
-//! without the handler, and [`Forwarded`], the hop. The handler receives a [`Ctx`] and
-//! calls it where a message needs the holder. The guard then checks that the slot changed
-//! only through the context.
+//! without the handler, [`Forwarded`], the hop, and, for a program with targets, [`Hub`],
+//! a message the config sends to another actor of the program after the holder was
+//! verified. The handler receives a [`Ctx`] and calls it where a message needs the holder.
+//! The guard then checks that the slot changed only through the context.
 //!
 //! This crate is policy-free. Which role a slot plays comes from the consumer through
 //! [`Role`].
@@ -20,8 +21,10 @@
 #![warn(missing_docs)]
 
 use borsh::{BorshDeserialize, BorshSerialize};
+use std::collections::BTreeSet;
+
 use lee_core::account::{AccountId, Actor};
-use lee_core::program::{PdaSeed, ReceiveInput, Response};
+use lee_core::program::{PdaSeed, ReceiveInput, Response, SyncMessage};
 
 /// Why a message was refused. It becomes a panic, which is how a handler fails on LEZ, with
 /// a stable code in front of the sentence: `lez-authority/<role> E103: the signing account
@@ -65,11 +68,17 @@ pub enum AuthorityError {
     ViaNotAllowed,
     /// The program's handler changed the slot by other means than the context.
     SlotChanged,
+    /// A hub message came from somewhere other than the config account, or reached the config.
+    NotFromConfig,
+    /// The handler sent to a target before the holder was verified.
+    SendNeedsHolder,
+    /// The target's state does not decode.
+    TargetDoesNotDecode,
 }
 
 impl AuthorityError {
     /// Every refusal, for the table test.
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 21] = [
         Self::NotInitialized,
         Self::ConfigDoesNotDecode,
         Self::MessageDoesNotDecode,
@@ -88,6 +97,9 @@ impl AuthorityError {
         Self::NotHolder,
         Self::ViaNotAllowed,
         Self::SlotChanged,
+        Self::NotFromConfig,
+        Self::SendNeedsHolder,
+        Self::TargetDoesNotDecode,
     ];
 
     /// The stable code. Append-only: a number is never reused or renumbered.
@@ -112,6 +124,9 @@ impl AuthorityError {
             Self::NotThroughSeat => 122,
             Self::SlotChanged => 126,
             Self::NotInstalled => 131,
+            Self::NotFromConfig => 123,
+            Self::SendNeedsHolder => 132,
+            Self::TargetDoesNotDecode => 133,
         }
     }
 
@@ -159,6 +174,13 @@ impl AuthorityError {
             Self::SlotChanged => {
                 format!("a handler must not change the {role} slot except through the context")
             }
+            Self::NotFromConfig => {
+                "a hub message comes only from the config account, to a target".into()
+            }
+            Self::SendNeedsHolder => {
+                format!("sending to a target needs the {role}: require it first")
+            }
+            Self::TargetDoesNotDecode => "the target's state does not decode".into(),
         }
     }
 }
@@ -320,7 +342,17 @@ pub struct Forwarded {
     pub inner: Vec<u8>,
 }
 
-/// A message enum that hosts the library's two variants, [`Op`] and [`Forwarded`].
+/// A message the config account sends to another actor of the program, a target, after the
+/// holder was verified. The program hosts it in its message enum when it has targets. A
+/// target accepts it only from the config account itself.
+#[derive(BorshSerialize, BorshDeserialize, Clone, Debug, PartialEq, Eq)]
+pub struct Hub {
+    /// The encoded message for the target, one of the program's own.
+    pub inner: Vec<u8>,
+}
+
+/// A message enum that hosts the library's variants: [`Op`] and [`Forwarded`] always,
+/// [`Hub`] when the program has targets.
 pub trait Hosts: BorshSerialize + BorshDeserialize {
     /// Wraps a hop in its hosting variant.
     fn forwarded(hop: Forwarded) -> Self;
@@ -334,6 +366,17 @@ pub trait Hosts: BorshSerialize + BorshDeserialize {
     /// # Errors
     /// The message itself when it is not an operation.
     fn into_op(self) -> Result<Op, Self>;
+    /// Wraps a hub message in its hosting variant. Only a program with targets hosts one.
+    fn hub(_hub: Hub) -> Self {
+        panic!("lez-authority: this program hosts no hub variant, so it cannot send to targets")
+    }
+    /// Unwraps a hub message, or gives the message back.
+    ///
+    /// # Errors
+    /// The message itself when it is not a hub message.
+    fn into_hub(self) -> Result<Hub, Self> {
+        Err(self)
+    }
 }
 
 /// What the guard hands the handler: who is speaking, if the message came through the
@@ -345,6 +388,8 @@ pub struct Ctx {
     program: AccountId,
     gate: InitGate,
     expected: Option<AuthoritySlot>,
+    verified: bool,
+    outbox: Vec<(AccountId, Vec<u8>)>,
 }
 
 impl Ctx {
@@ -355,12 +400,25 @@ impl Ctx {
     }
 
     /// Panics unless the message came through the sender's own actor and the sender is
-    /// the holder.
-    pub fn require(&self, slot: &AuthoritySlot) {
+    /// the holder. Afterwards the handler may send to targets.
+    pub fn require(&mut self, slot: &AuthoritySlot) {
         let caller = self.vouched();
         if let Err(error) = slot.check(caller) {
             self.fail(&error);
         }
+        self.verified = true;
+    }
+
+    /// Sends `message` to `target`'s own actor under the program, after the handler returns.
+    /// The target receives it as a hub message and knows it came from the config account.
+    /// Panics unless the holder was verified first.
+    pub fn send<M: Hosts>(&mut self, target: AccountId, message: &M) {
+        if !self.verified {
+            self.fail(&AuthorityError::SendNeedsHolder);
+        }
+        let inner = borsh::to_vec(message).expect("a message encodes");
+        let hub = borsh::to_vec(&M::hub(Hub { inner })).expect("a message encodes");
+        self.outbox.push((target, hub));
     }
 
     /// Installs the sender as the holder of an unset slot, if the sender passes the init
@@ -466,8 +524,8 @@ pub const fn seed(label: &[u8]) -> PdaSeed {
     PdaSeed::new(bytes)
 }
 
-/// Runs `handler` behind the hop, the management operations and the slot check. `gate`
-/// says who may send the first `Init`.
+/// Runs `handler` behind the hop, the management operations and the slot check, for a
+/// program without targets. `gate` says who may send the first `Init`.
 ///
 /// At any actor other than the config, the message is forwarded to the config if the
 /// sender authorized the transaction. At the config, a forwarded message is unwrapped
@@ -512,11 +570,83 @@ where
     C: BorshSerialize + BorshDeserialize + Default + HasSlot<R>,
     M: Hosts,
 {
+    engine::<R, C, (), M>(input, seed, gate, message, handler, None::<fn(&mut (), M)>)
+}
+
+/// [`guard`] for a program with targets. A hub message that reaches an actor other than
+/// the config is accepted only when it came from the config account itself. The target's
+/// own state, `T`, is loaded (default when the account is empty), `target_handler` runs,
+/// and the state is written back.
+///
+/// # Panics
+/// On every refusal, with [`AuthorityError::text`] as the text.
+pub fn guard_with_targets<R, C, T, M>(
+    input: &ReceiveInput,
+    seed: &PdaSeed,
+    gate: InitGate,
+    message: M,
+    handler: impl FnOnce(&mut Ctx, &mut C, M),
+    target_handler: impl FnOnce(&mut T, M),
+) -> Response
+where
+    R: Role,
+    C: BorshSerialize + BorshDeserialize + Default + HasSlot<R>,
+    T: BorshSerialize + BorshDeserialize + Default,
+    M: Hosts,
+{
+    match engine::<R, C, T, M>(input, seed, gate, message, handler, Some(target_handler)) {
+        Ok(response) => response,
+        Err(error) => panic!("{}", error.text(R::NAME)),
+    }
+}
+
+/// [`guard_with_targets`] with the guard's own refusals as a value.
+///
+/// # Errors
+/// See [`AuthorityError`].
+pub fn try_guard_with_targets<R, C, T, M>(
+    input: &ReceiveInput,
+    seed: &PdaSeed,
+    gate: InitGate,
+    message: M,
+    handler: impl FnOnce(&mut Ctx, &mut C, M),
+    target_handler: impl FnOnce(&mut T, M),
+) -> Result<Response, AuthorityError>
+where
+    R: Role,
+    C: BorshSerialize + BorshDeserialize + Default + HasSlot<R>,
+    T: BorshSerialize + BorshDeserialize + Default,
+    M: Hosts,
+{
+    engine::<R, C, T, M>(input, seed, gate, message, handler, Some(target_handler))
+}
+
+fn engine<R, C, T, M>(
+    input: &ReceiveInput,
+    seed: &PdaSeed,
+    gate: InitGate,
+    message: M,
+    handler: impl FnOnce(&mut Ctx, &mut C, M),
+    target_handler: Option<impl FnOnce(&mut T, M)>,
+) -> Result<Response, AuthorityError>
+where
+    R: Role,
+    C: BorshSerialize + BorshDeserialize + Default + HasSlot<R>,
+    T: BorshSerialize + BorshDeserialize + Default,
+    M: Hosts,
+{
     let program = input.receiver.program_account_id;
     let config_actor = Actor::new(config_account(program, seed), program);
     if input.receiver != config_actor {
-        return seat(input, config_actor, message);
+        return match message.into_hub() {
+            Ok(hub) => at_target(input, config_actor, hub, target_handler),
+            Err(message) => seat(input, config_actor, message),
+        };
     }
+    let message = match message.into_hub() {
+        Ok(_) => return Err(AuthorityError::NotFromConfig),
+        Err(message) => message,
+    };
     let (caller, message) = match message.into_forwarded() {
         Ok(hop) => {
             if !input.from_own_program() {
@@ -530,6 +660,10 @@ where
             let inner: M =
                 borsh::from_slice(&hop.inner).map_err(|_| AuthorityError::MessageDoesNotDecode)?;
             let inner = match inner.into_forwarded() {
+                Ok(_) => return Err(AuthorityError::MessageDoesNotDecode),
+                Err(message) => message,
+            };
+            let inner = match inner.into_hub() {
                 Ok(_) => return Err(AuthorityError::MessageDoesNotDecode),
                 Err(message) => message,
             };
@@ -554,6 +688,8 @@ where
         program,
         gate,
         expected: None,
+        verified: false,
+        outbox: Vec::new(),
     };
     match op {
         Ok(Op::Init) => ctx.install(HasSlot::<R>::slot_mut(&mut config)),
@@ -567,6 +703,45 @@ where
         return Err(AuthorityError::SlotChanged);
     }
     let bytes = borsh::to_vec(&config).map_err(|_| AuthorityError::ConfigDoesNotDecode)?;
+    let mut response = Response::set_state(bytes);
+    for (target, message) in ctx.outbox {
+        response.sync_messages.push(SyncMessage {
+            to: Actor::new(target, program),
+            message,
+            pda_seeds: BTreeSet::new(),
+        });
+    }
+    Ok(response)
+}
+
+/// A hub message at a target: only from the config account itself, then the target's own
+/// state goes through the target handler.
+fn at_target<T, M>(
+    input: &ReceiveInput,
+    config_actor: Actor,
+    hub: Hub,
+    target_handler: Option<impl FnOnce(&mut T, M)>,
+) -> Result<Response, AuthorityError>
+where
+    T: BorshSerialize + BorshDeserialize + Default,
+    M: Hosts,
+{
+    if input.from != Some(config_actor) {
+        return Err(AuthorityError::NotFromConfig);
+    }
+    let Some(target_handler) = target_handler else {
+        return Err(AuthorityError::NotFromConfig);
+    };
+    let message: M =
+        borsh::from_slice(&hub.inner).map_err(|_| AuthorityError::MessageDoesNotDecode)?;
+    let pre: &[u8] = &input.pre_state;
+    let mut state: T = if pre.is_empty() {
+        T::default()
+    } else {
+        borsh::from_slice(pre).map_err(|_| AuthorityError::TargetDoesNotDecode)?
+    };
+    target_handler(&mut state, message);
+    let bytes = borsh::to_vec(&state).map_err(|_| AuthorityError::TargetDoesNotDecode)?;
     Ok(Response::set_state(bytes))
 }
 
@@ -615,12 +790,14 @@ mod tests {
             program: PROGRAM,
             gate,
             expected: None,
+            verified: false,
+            outbox: Vec::new(),
         }
     }
 
     #[test]
     fn codes_are_stable() {
-        let expected: [(AuthorityError, u16); 18] = [
+        let expected: [(AuthorityError, u16); 21] = [
             (AuthorityError::NotInitialized, 101),
             (AuthorityError::Renounced, 102),
             (AuthorityError::NotHolder, 103),
@@ -639,6 +816,9 @@ mod tests {
             (AuthorityError::NotThroughSeat, 122),
             (AuthorityError::SlotChanged, 126),
             (AuthorityError::NotInstalled, 131),
+            (AuthorityError::NotFromConfig, 123),
+            (AuthorityError::SendNeedsHolder, 132),
+            (AuthorityError::TargetDoesNotDecode, 133),
         ];
         for (error, code) in &expected {
             assert_eq!(error.code(), *code, "{error:?}");
