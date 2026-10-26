@@ -44,6 +44,10 @@ pub enum AuthorityError {
     NotInstalled,
     /// The slot already holds someone.
     AlreadyInstalled,
+    /// Init came from an account other than the program's own, or not at top level.
+    NotDeployer,
+    /// Init came from an account other than the genesis key, or not at top level.
+    NotGenesis,
     /// No nominee is pending.
     NoNomination,
     /// The caller is not the pending nominee.
@@ -80,6 +84,12 @@ impl AuthorityError {
             }
             Self::NotInstalled => format!("no {role} is installed"),
             Self::AlreadyInstalled => format!("the {role} is already installed"),
+            Self::NotDeployer => format!(
+                "only the deployer installs the first {role}: the program's own account, through its seat at top level"
+            ),
+            Self::NotGenesis => {
+                format!("only the genesis key installs the first {role}, through its seat at top level")
+            }
             Self::NoNomination => format!("no {role} nominee is pending"),
             Self::NotNominee => format!("the signing account is not the nominated {role}"),
             Self::SeedProofFailed => {
@@ -211,6 +221,16 @@ pub trait HasSlot<R: Role> {
     fn slot_mut(&mut self) -> &mut AuthoritySlot;
 }
 
+/// Who may install the first holder.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InitGate {
+    /// The program's own account. On LEZ 0.4 that is the loader header account, whose key
+    /// the deployer holds, so nobody else can win the race after deployment.
+    Deployer,
+    /// A key chosen at build time, for a program whose header account is not a key.
+    Genesis(AccountId),
+}
+
 /// A management operation on the slot. The program hosts it in its message enum, the
 /// guard runs it, and the handler never sees it.
 #[derive(BorshSerialize, BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -266,6 +286,8 @@ pub trait Hosts: BorshSerialize + BorshDeserialize {
 pub struct Ctx {
     caller: Option<Caller>,
     role: &'static str,
+    program: AccountId,
+    gate: InitGate,
     expected: Option<AuthoritySlot>,
 }
 
@@ -285,10 +307,19 @@ impl Ctx {
         }
     }
 
-    /// Installs the sender as the holder of an unset slot. The hosted [`Op::Init`] does
-    /// this without the handler; call it yourself from an init message of your own.
+    /// Installs the sender as the holder of an unset slot, if the sender passes the init
+    /// gate: the program's own account, or the genesis key, at top level. The hosted
+    /// [`Op::Init`] does this without the handler; call it yourself from an init message of
+    /// your own.
     pub fn install(&mut self, slot: &mut AuthoritySlot) {
         let caller = *self.vouched();
+        let (allowed, refusal) = match self.gate {
+            InitGate::Deployer => (self.program, AuthorityError::NotDeployer),
+            InitGate::Genesis(key) => (key, AuthorityError::NotGenesis),
+        };
+        if caller.account != allowed || caller.via.is_some() {
+            self.fail(&refusal);
+        }
         match slot {
             AuthoritySlot::Unset => {}
             AuthoritySlot::Held { .. } => self.fail(&AuthorityError::AlreadyInstalled),
@@ -379,7 +410,8 @@ pub const fn seed(label: &[u8]) -> PdaSeed {
     PdaSeed::new(bytes)
 }
 
-/// Runs `handler` behind the hop, the management operations and the slot check.
+/// Runs `handler` behind the hop, the management operations and the slot check. `gate`
+/// says who may send the first `Init`.
 ///
 /// At any actor other than the config, the message is forwarded to the config if the
 /// sender authorized the transaction. At the config, a forwarded message is unwrapped
@@ -393,6 +425,7 @@ pub const fn seed(label: &[u8]) -> PdaSeed {
 pub fn guard<R, C, M>(
     input: &ReceiveInput,
     seed: &PdaSeed,
+    gate: InitGate,
     message: M,
     handler: impl FnOnce(&mut Ctx, &mut C, M),
 ) -> Response
@@ -401,7 +434,7 @@ where
     C: BorshSerialize + BorshDeserialize + Default + HasSlot<R>,
     M: Hosts,
 {
-    match try_guard::<R, C, M>(input, seed, message, handler) {
+    match try_guard::<R, C, M>(input, seed, gate, message, handler) {
         Ok(response) => response,
         Err(error) => panic!("{}", error.describe(R::NAME)),
     }
@@ -414,6 +447,7 @@ where
 pub fn try_guard<R, C, M>(
     input: &ReceiveInput,
     seed: &PdaSeed,
+    gate: InitGate,
     message: M,
     handler: impl FnOnce(&mut Ctx, &mut C, M),
 ) -> Result<Response, AuthorityError>
@@ -461,6 +495,8 @@ where
     let mut ctx = Ctx {
         caller,
         role: R::NAME,
+        program,
+        gate,
         expected: None,
     };
     match op {
@@ -510,10 +546,18 @@ mod tests {
         Caller { account, via }
     }
 
+    const PROGRAM: AccountId = AccountId::new([0xA0; 32]);
+
     fn ctx(caller: Option<Caller>) -> Ctx {
+        ctx_with(caller, InitGate::Deployer)
+    }
+
+    fn ctx_with(caller: Option<Caller>, gate: InitGate) -> Ctx {
         Ctx {
             caller,
             role: "holder",
+            program: PROGRAM,
+            gate,
             expected: None,
         }
     }
@@ -541,13 +585,38 @@ mod tests {
     }
 
     #[test]
-    fn install_records_the_sender_and_what_the_slot_must_look_like() {
+    fn the_deployer_installs_itself_and_the_slot_must_stay_that_way() {
         let mut slot = AuthoritySlot::Unset;
-        let mut ctx = ctx(Some(caller(KEY, Some(GOVERNANCE))));
+        let mut ctx = ctx(Some(caller(PROGRAM, None)));
         ctx.install(&mut slot);
-        let held = AuthoritySlot::held(Holder { account: KEY, via: Some(GOVERNANCE) });
+        let held = AuthoritySlot::held(Holder { account: PROGRAM, via: None });
         assert_eq!(slot, held);
         assert_eq!(ctx.expected, Some(held));
+    }
+
+    #[test]
+    #[should_panic(expected = "only the deployer installs the first holder")]
+    fn another_account_cannot_install() {
+        ctx(Some(caller(KEY, None))).install(&mut AuthoritySlot::Unset);
+    }
+
+    #[test]
+    #[should_panic(expected = "only the deployer installs the first holder")]
+    fn the_deployer_reached_through_a_program_cannot_install() {
+        ctx(Some(caller(PROGRAM, Some(GOVERNANCE)))).install(&mut AuthoritySlot::Unset);
+    }
+
+    #[test]
+    fn with_a_genesis_key_only_that_key_installs() {
+        let mut slot = AuthoritySlot::Unset;
+        ctx_with(Some(caller(KEY, None)), InitGate::Genesis(KEY)).install(&mut slot);
+        assert_eq!(slot, AuthoritySlot::held(Holder { account: KEY, via: None }));
+    }
+
+    #[test]
+    #[should_panic(expected = "only the genesis key installs the first holder")]
+    fn with_a_genesis_key_the_deployer_is_refused() {
+        ctx_with(Some(caller(PROGRAM, None)), InitGate::Genesis(KEY)).install(&mut AuthoritySlot::Unset);
     }
 
     fn held_by_key_with(nominee: Option<AccountId>) -> AuthoritySlot {
@@ -635,7 +704,7 @@ mod tests {
     #[should_panic(expected = "the holder is already installed")]
     fn install_refuses_a_held_slot() {
         let mut slot = AuthoritySlot::held(Holder { account: KEY, via: None });
-        ctx(Some(caller(OTHER, None))).install(&mut slot);
+        ctx(Some(caller(PROGRAM, None))).install(&mut slot);
     }
 
     #[test]
