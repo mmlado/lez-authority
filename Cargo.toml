@@ -1,6 +1,6 @@
 [package]
 name = "lez-authority"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 description = "Authority primitives for LEZ actor programs: the holder slot, the vouched caller, and the routing between a sender's own actor and the program's config actor"

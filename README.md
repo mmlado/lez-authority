@@ -2,12 +2,13 @@
 
 [![CI](https://github.com/mmlado/lez-authority/actions/workflows/ci.yml/badge.svg)](https://github.com/mmlado/lez-authority/actions/workflows/ci.yml)
 [![Audit](https://github.com/mmlado/lez-authority/actions/workflows/audit.yml/badge.svg)](https://github.com/mmlado/lez-authority/actions/workflows/audit.yml)
+[![Version](https://img.shields.io/github/v/tag/mmlado/lez-authority?include_prereleases&sort=semver&label=version)](https://github.com/mmlado/lez-authority/releases)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](LICENSE-MIT)
 [![Rust](https://img.shields.io/badge/rust-1.98.1-93450a?logo=rust)](rust-toolchain.toml)
 
 Authority primitives for LEZ actor programs (LEZ 0.4): a slot per role inside a program's config, the hop that carries a sender's authority from their own actor to the config, and the guard that runs the program's own handler behind both. Policy-free: no notion of admin or freeze lives here. No SPEL dependency.
 
-Status: pre-alpha, nothing released yet. Pinned to logos-execution-zone `dev` at 7e3f7f7 (2026-10-24), the actor model of PR #935. The v0.2.4 line lives in [spel-authority](https://github.com/mmlado/spel-authority) and stays as it is. First consumer: [lez-admin-authority](https://github.com/mmlado/lez-admin-authority), which names the admin role.
+Status: alpha, `v0.1.0-alpha.1`. The API and the wire formats may still change before 0.1.0. Pinned to logos-execution-zone `dev` at 7e3f7f7 (2026-10-24), the actor model of PR #935. The v0.2.4 line lives in [spel-authority](https://github.com/mmlado/spel-authority) and stays as it is. First consumer: [lez-admin-authority](https://github.com/mmlado/lez-admin-authority), which names the admin role.
 
 See [CONTEXT.md](CONTEXT.md) for the glossary, [docs/routing.md](docs/routing.md) for every hop with its checks, and [docs/adr](docs/adr) for the two design decisions.
 
@@ -31,6 +32,17 @@ client ──────► is_authorized?     hop       from an actor of P?   
 Two hops for a gated message, one for an open message sent straight to the config, three when the holder reaches another actor of the program through the config, the hub. Identity comes from the engine's `from` at every hop, never from a field in the message.
 
 A holder is an account together with the program it acts through, its `via`: none for a key that signs at top level, the owning program for a PDA. The guard accepts a caller only when both match ([ADR-0001](docs/adr/0001-per-holder-via.md)).
+
+## Adding as a dependency
+
+```toml
+[dependencies]
+borsh = { version = "1", features = ["derive"] }
+lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone", rev = "7e3f7f765371c4110a1f7f37baf520cd253fb339" }
+lez-authority = { git = "https://github.com/mmlado/lez-authority", tag = "v0.1.0-alpha.1" }
+```
+
+A program that only needs an admin depends on [lez-admin-authority](https://github.com/mmlado/lez-admin-authority) instead, which brings this crate in. The `lee_core` source must match the one this crate pins, see [Versioning and stability](#versioning-and-stability).
 
 ## What a program writes
 
