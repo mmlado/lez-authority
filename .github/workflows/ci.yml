@@ -22,7 +22,7 @@ jobs:
       - name: Prefetch dependency sources
         run: cargo fetch --locked
       - name: Formatting
-        run: cargo fmt --check
+        run: cargo fmt --all --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked
       - name: Tests

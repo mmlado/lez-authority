@@ -1,0 +1,17 @@
+[package]
+name = "lez-authority-macros"
+version = "0.1.0-alpha.1"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Macros for lez-authority: the guard attribute on a handler, HasSlot from marked fields, Gated from marked messages"
+repository = "https://github.com/mmlado/lez-authority"
+readme = "../README.md"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro-crate = "3"
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full"] }
