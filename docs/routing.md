@@ -38,9 +38,10 @@ hop 1    (C, P) config  caller = None
                         state present and decodes                  else E101 / E109
                         handler(input, message)
                         the handler's write decodes, every slot unchanged   else E109 / E126
+                        no message the handler sends is a library message to (C, P)   else E135
 ```
 
-An unmarked message sent to any other actor runs there: the guard steps aside, and the handler sees that actor's own state, as in a program without the guard.
+An unmarked message sent to any other actor runs there over that actor's own state, as in a program without the guard, and nobody need sign. So wherever the handler runs, the guard refuses a response that sends `(C, P)` a library message (E135): the config would take it for a hop from that actor, a holder's seat included.
 
 ## A message that needs a holder
 
@@ -62,6 +63,7 @@ hop 2    (C, P) config  from an actor of P                         else E119
                         handler(input, message)
                         the handler's write decodes, every slot unchanged   else E109 / E126
                         every message the handler sends goes to an actor of P   else E134
+                        no message the handler sends is a library message to (C, P)   else E135
 ```
 
 Sent straight to the config, the message is E122. The handler sees `input.from` as `(A, P)` and `input.message` as the hop.
@@ -76,6 +78,7 @@ hop 2    (C, P) config  as above, and the handler's response sends a #[from_conf
 
 hop 3    (T, P) target  from == Some((C, P)), by exact actor       else E123
                         handler(input, message) over the target's own state
+                        no message the handler sends is a library message to (C, P)   else E135
 ```
 
 "From an actor of P" is not enough at hop 3, because any actor of `P` passes it: a stranger's seat could send the same message to a target. The target compares the whole actor. A `#[from_config]` message from a client, from another actor, or at the config itself, is E123. Every actor reached must be in the transaction's actor list, so a client lists the target too. An unmarked message the config sends runs at the target as well, but so would the same message from anyone, which is what the mark is for.

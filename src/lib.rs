@@ -6,6 +6,8 @@
 //! The seat checks `is_authorized` and forwards the message to the config, naming the program
 //! that reached it. The config trusts the forward because only this program's own actors
 //! reach it with `from_own_program()`, and every one of them runs the same code: [`guard()`].
+//! The guard refuses a handler whose response sends the config a library message, so only a
+//! seat builds the hop.
 //!
 //! The program stays a plain LEZ program: its own message enum, its own state, and a handler
 //! `fn(&ReceiveInput, Message) -> Response` under `lee_core::actor_entrypoint!`. The
@@ -83,11 +85,13 @@ pub enum AuthorityError {
     NotFromConfig,
     /// The handler of a message that came through a seat sent to another program.
     ForeignSend,
+    /// A handler sent a library message to the config account.
+    LibrarySend,
 }
 
 impl AuthorityError {
     /// Every refusal, for the table test.
-    pub const ALL: [Self; 20] = [
+    pub const ALL: [Self; 21] = [
         Self::NotInitialized,
         Self::ConfigDoesNotDecode,
         Self::MessageDoesNotDecode,
@@ -108,6 +112,7 @@ impl AuthorityError {
         Self::SlotChanged,
         Self::NotFromConfig,
         Self::ForeignSend,
+        Self::LibrarySend,
     ];
 
     /// The stable code. Append-only: a number is never reused or renumbered.
@@ -134,6 +139,7 @@ impl AuthorityError {
             Self::SlotChanged => 126,
             Self::NotInstalled => 131,
             Self::ForeignSend => 134,
+            Self::LibrarySend => 135,
         }
     }
 
@@ -186,6 +192,9 @@ impl AuthorityError {
             Self::NotFromConfig => "this message comes only from the config account".into(),
             Self::ForeignSend => {
                 "a message that came through a seat sends only to actors of this program".into()
+            }
+            Self::LibrarySend => {
+                "a handler must not send a library message to the config account".into()
             }
         }
     }
@@ -785,6 +794,9 @@ pub const fn seed(label: &[u8]) -> PdaSeed {
 /// - Anything else runs where it was sent, as in a program without the guard. At the config
 ///   that needs an initialized config, and the slots are checked afterwards.
 ///
+/// Wherever the handler runs, the guard refuses a response that sends the config a library
+/// message, which the config would take for a hop from that actor.
+///
 /// The handler of a message that came through a seat sees `input.from` as the sender's own
 /// actor and `input.message` as the hop.
 ///
@@ -832,17 +844,25 @@ where
     let config_actor = Actor::new(config_account(program, seed), program);
     let at_config = input.receiver == config_actor;
     let from_config = input.from == Some(config_actor);
+    // The config trusts a hop from any actor of this program, so a handler must not send one.
+    let handler = |input: &ReceiveInput, message: M| {
+        let response = handler(input, message);
+        if sends_library_message(&response, config_actor) {
+            return Err(refuse(AuthorityError::LibrarySend));
+        }
+        Ok(response)
+    };
     match message {
         Wire::Program(message) => {
             if message.only_from_config() {
                 if at_config || !from_config {
                     return Err(refuse(AuthorityError::NotFromConfig));
                 }
-                return Ok(handler(input, message));
+                return handler(input, message);
             }
             if !at_config {
                 if from_config || !Rs::needs_any(&message) {
-                    return Ok(handler(input, message));
+                    return handler(input, message);
                 }
                 return seat(input, config_actor).map_err(refuse);
             }
@@ -934,7 +954,7 @@ fn at_the_config<Rs, C, M>(
     gate: InitGate,
     caller: Option<Caller>,
     message: M,
-    handler: impl FnOnce(&ReceiveInput, M) -> Response,
+    handler: impl FnOnce(&ReceiveInput, M) -> Result<Response, Refusal>,
 ) -> Result<Response, Refusal>
 where
     Rs: Roles<C, M>,
@@ -958,7 +978,7 @@ where
     };
     Rs::gate(&ctx, &config, &message)?;
     let before = Rs::slots(&config);
-    let response = handler(input, message);
+    let response = handler(input, message)?;
     if let Some(post) = &response.post_state {
         let post: &[u8] = post;
         let after: C =
@@ -988,6 +1008,21 @@ fn seat(input: &ReceiveInput, config_actor: Actor) -> Result<Response, Authority
         inner: input.message.clone(),
     }));
     Ok(Response::keep_state().send_sync(config_actor, &hop))
+}
+
+/// Whether `response` sends a library message to `actor`.
+fn sends_library_message(response: &Response, actor: Actor) -> bool {
+    let sync = response
+        .sync_messages
+        .iter()
+        .map(|sent| (sent.to, &sent.message));
+    sync.chain(
+        response
+            .async_messages
+            .iter()
+            .map(|sent| (sent.to, &sent.message)),
+    )
+    .any(|(to, message)| to == actor && message.first() == Some(&LIBRARY_TAG))
 }
 
 #[cfg(test)]

@@ -1,4 +1,7 @@
+use std::collections::BTreeSet;
+
 use lee_core::account::ActorState;
+use lee_core::program::SyncMessage;
 
 use super::*;
 
@@ -66,7 +69,7 @@ fn run(
 
 #[test]
 fn codes_are_stable() {
-    let expected: [(AuthorityError, u16); 20] = [
+    let expected: [(AuthorityError, u16); 21] = [
         (AuthorityError::NotInitialized, 101),
         (AuthorityError::Renounced, 102),
         (AuthorityError::NotHolder, 103),
@@ -87,6 +90,7 @@ fn codes_are_stable() {
         (AuthorityError::SlotChanged, 126),
         (AuthorityError::NotInstalled, 131),
         (AuthorityError::ForeignSend, 134),
+        (AuthorityError::LibrarySend, 135),
     ];
     for (error, code) in &expected {
         assert_eq!(error.code(), *code, "{error:?}");
@@ -451,6 +455,7 @@ enum Msg {
     ToTarget(AccountId),
     ToElsewhere(AccountId),
     Mark,
+    Pass { to: AccountId, bytes: Vec<u8> },
 }
 
 impl Gated for Msg {
@@ -472,6 +477,15 @@ fn handle(input: &ReceiveInput, message: Msg) -> Response {
     if let Msg::Mark = message {
         return Response::set_state(vec![1]);
     }
+    if let Msg::Pass { to, bytes } = message {
+        let mut response = Response::keep_state();
+        response.sync_messages.push(SyncMessage {
+            to: Actor::new(to, PROGRAM),
+            message: bytes,
+            pda_seeds: BTreeSet::new(),
+        });
+        return response;
+    }
     let mut config: Two = if pre.is_empty() {
         Two::default()
     } else {
@@ -483,7 +497,7 @@ fn handle(input: &ReceiveInput, message: Msg) -> Response {
         Msg::ClearSecond => config.second = AuthoritySlot::Unset,
         Msg::ToTarget(target) => send = Some(Actor::new(target, PROGRAM)),
         Msg::ToElsewhere(target) => send = Some(Actor::new(target, ELSEWHERE)),
-        Msg::Mark => unreachable!(),
+        Msg::Mark | Msg::Pass { .. } => unreachable!(),
     }
     let response = Response::set_state(borsh::to_vec(&config).unwrap());
     match send {
@@ -763,6 +777,34 @@ fn a_forward_from_another_program_is_refused() {
     assert_eq!(
         at(seat_of(KEY), Some(seat_of(OTHER)), true, None, hop).err(),
         Some(Refusal::of::<First>(AuthorityError::ForwardedNotAtConfig))
+    );
+}
+
+#[test]
+fn a_handler_cannot_forge_a_hop() {
+    let hop = Wire::<Msg>::Library(LibraryMessage::Forwarded(Forwarded {
+        via: None,
+        inner: borsh::to_vec(&Wire::<Msg>::op::<First>(Op::Nominate { next: OTHER })).unwrap(),
+    }));
+    let pass = Msg::Pass {
+        to: config_actor().account_id,
+        bytes: borsh::to_vec(&hop).unwrap(),
+    };
+    assert_eq!(
+        at(seat_of(PROGRAM), None, false, None, pass.into()).err(),
+        Some(Refusal::of::<First>(AuthorityError::LibrarySend))
+    );
+}
+
+#[test]
+fn a_handler_at_the_config_cannot_send_it_a_library_message() {
+    let pass = Msg::Pass {
+        to: config_actor().account_id,
+        bytes: borsh::to_vec(&Wire::<Msg>::op::<First>(Op::Renounce)).unwrap(),
+    };
+    assert_eq!(
+        at(config_actor(), None, false, Some(&two(None)), pass.into()).err(),
+        Some(Refusal::of::<First>(AuthorityError::LibrarySend))
     );
 }
 
