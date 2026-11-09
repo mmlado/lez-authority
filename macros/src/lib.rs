@@ -56,8 +56,8 @@ pub fn derive_has_slot(input: TokenStream) -> TokenStream {
 }
 
 /// Implements `Gated` from markers on the message enum's variants: `#[only(R)]` on a message
-/// that needs role `R`'s holder, `#[only(A, B)]` for both, and `#[from_config]` on one that
-/// only the config account may send.
+/// that needs role `R`'s holder, one role per message, and `#[from_config]` on one that only
+/// the config account may send.
 ///
 /// ```ignore
 /// #[derive(BorshSerialize, BorshDeserialize, Gated)]
@@ -260,6 +260,9 @@ fn has_slot(input: &DeriveInput, krate: &TokenStream2) -> syn::Result<TokenStrea
     Ok(quote!(#(#impls)*))
 }
 
+const ONE_ROLE: &str =
+    "#[only] takes one role, as in #[only(Admin)]: a message for two roles is not supported yet";
+
 fn gated(input: &DeriveInput, krate: &TokenStream2) -> syn::Result<TokenStream2> {
     let Data::Enum(data) = &input.data else {
         return Err(Error::new(
@@ -279,26 +282,18 @@ fn gated(input: &DeriveInput, krate: &TokenStream2) -> syn::Result<TokenStream2>
     let mut from_config = Vec::new();
     for variant in &data.variants {
         let ident = &variant.ident;
-        let mut roles: Vec<Path> = Vec::new();
+        let mut role: Option<Path> = None;
         let mut config_only = false;
         for attr in &variant.attrs {
             if attr.path().is_ident("only") {
-                let listed =
-                    attr.parse_args_with(Punctuated::<Path, Token![,]>::parse_terminated)?;
-                if listed.is_empty() {
-                    return Err(Error::new(
-                        attr.span(),
-                        "#[only] names a role, as in #[only(Admin)]",
-                    ));
-                }
-                for role in listed {
-                    if roles.iter().any(|known| key(known) == key(&role)) {
-                        return Err(Error::new(
-                            attr.span(),
-                            format!("{} is named twice", key(&role)),
-                        ));
-                    }
-                    roles.push(role);
+                let one_role = || Error::new(attr.span(), ONE_ROLE);
+                let listed = attr
+                    .parse_args_with(Punctuated::<Path, Token![,]>::parse_terminated)
+                    .map_err(|_| one_role())?;
+                let mut listed = listed.into_iter();
+                match (listed.next(), listed.next(), &role) {
+                    (Some(only), None, None) => role = Some(only),
+                    _ => return Err(one_role()),
                 }
             } else if attr.path().is_ident("from_config") {
                 if !matches!(attr.meta, Meta::Path(_)) {
@@ -307,15 +302,15 @@ fn gated(input: &DeriveInput, krate: &TokenStream2) -> syn::Result<TokenStream2>
                 config_only = true;
             }
         }
-        if config_only && !roles.is_empty() {
+        if config_only && role.is_some() {
             return Err(Error::new(
                 variant.span(),
                 "a message is either #[only(..)], sent through the sender's seat, or #[from_config], sent by the config",
             ));
         }
-        if !roles.is_empty() {
+        if let Some(role) = &role {
             needs.push(quote! {
-                Self::#ident { .. } => #(role == ::core::any::TypeId::of::<#roles>())||*,
+                Self::#ident { .. } => role == ::core::any::TypeId::of::<#role>(),
             });
         }
         if config_only {
@@ -414,10 +409,6 @@ mod tests {
             "a message is either #[only(..)], sent through the sender's seat, or #[from_config], sent by the config"
         );
         assert_eq!(
-            refusal(gated, "enum Message { #[only(Admin, Admin)] Set(u64) }"),
-            "Admin is named twice"
-        );
-        assert_eq!(
             refusal(gated, "enum Message { #[from_config(x)] Set(u64) }"),
             "#[from_config] takes no arguments"
         );
@@ -425,6 +416,26 @@ mod tests {
         assert_eq!(
             refusal(gated, &format!("enum Message {{ {} }}", many.join(", "))),
             "the message enum must stay below 255 variants: the first byte 255 marks the library's messages"
+        );
+    }
+
+    #[test]
+    fn only_takes_one_role() {
+        let one_role = "#[only] takes one role, as in #[only(Admin)]: a message for two roles is not supported yet";
+        assert_eq!(
+            refusal(gated, "enum Message { #[only(Admin, Freeze)] Set(u64) }"),
+            one_role
+        );
+        assert_eq!(
+            refusal(gated, "enum Message { #[only] Set(u64) }"),
+            one_role
+        );
+        assert_eq!(
+            refusal(
+                gated,
+                "enum Message { #[only(Admin)] #[only(Freeze)] Set(u64) }"
+            ),
+            one_role
         );
     }
 

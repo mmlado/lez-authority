@@ -117,9 +117,9 @@ A program names its roles in the attribute: `roles(A)` for one, `roles(A, B)` fo
 | --- | --- | --- |
 | `#[guard(roles(..), config = C, seed = S)]` | the handler | the outer function and the call to `guard`. `genesis = KEY` replaces the deployer gate |
 | `#[derive(HasSlot)]`, `#[slot(R)]` | the config, its slot field | `HasSlot<R>` |
-| `#[derive(Gated)]`, `#[only(R)]`, `#[only(A, B)]`, `#[from_config]` | the message enum, its variants | `Gated` |
+| `#[derive(Gated)]`, `#[only(R)]`, `#[from_config]` | the message enum, its variants | `Gated` |
 
-A misplaced marker is a compile error with the reason, such as `a message is either #[only(..)], sent through the sender's seat, or #[from_config], sent by the config`. [`tests/macros.rs`](tests/macros.rs) holds the derives against hand-written impls, and a handler under the attribute against its hand expansion, input by input, refusals included. The macros find this crate through a role crate that re-exports it, so a program that depends on lez-admin-authority alone can use them.
+`#[only]` takes one role. A misplaced marker is a compile error with the reason, such as `a message is either #[only(..)], sent through the sender's seat, or #[from_config], sent by the config`. [`tests/macros.rs`](tests/macros.rs) holds the derives against hand-written impls, and a handler under the attribute against its hand expansion, input by input, refusals included. The macros find this crate through a role crate that re-exports it, so a program that depends on lez-admin-authority alone can use them.
 
 ## The slot
 

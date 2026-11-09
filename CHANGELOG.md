@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - The `guard` attribute: on a plain LEZ handler, `fn(&ReceiveInput, Message) -> Response` under `lee_core::actor_entrypoint!`, it puts the guard in front and leaves the program's code as it is. `roles(..)`, `config`, `seed`, and `genesis` for a genesis key.
-- `Gated`, which a program's messages declare to the guard: `needs::<R>()` for a message that needs role `R`'s holder, checked before the handler, and `only_from_config()` for one that only the config account may send. `#[derive(Gated)]` with `#[only(R)]`, `#[only(A, B)]` and `#[from_config]`.
+- `Gated`, which a program's messages declare to the guard: `needs::<R>()` for a message that needs role `R`'s holder, checked before the handler, and `only_from_config()` for one that only the config account may send. `#[derive(Gated)]` with `#[only(R)]`, one role per message, and `#[from_config]`.
 - `#[derive(HasSlot)]` with `#[slot(R)]` on the config's field.
 - `lez-authority-macros`, a crate of this workspace re-exported here, for the attribute and the derives.
 - `Wire`, `LibraryMessage` and `LIBRARY_TAG`: the library's messages travel behind the first byte 255, so the program's enum hosts none of them. `Wire::op::<R>(op)` builds a client's operation.

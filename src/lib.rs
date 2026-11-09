@@ -492,7 +492,8 @@ impl<M: BorshDeserialize> BorshDeserialize for Wire<M> {
 /// `#[from_config]` on one that only the config account may send.
 pub trait Gated {
     /// Whether this message needs role `R`'s holder. The guard then takes it only through
-    /// the sender's own actor and checks the holder before the handler runs.
+    /// the sender's own actor and checks the holder before the handler runs. A message that
+    /// needs two roles needs one caller holding both.
     fn needs<R: Role>(&self) -> bool {
         false
     }

@@ -53,8 +53,6 @@ enum Message {
     OnlySecond {
         value: u64,
     },
-    #[only(First, Second)]
-    Both,
     #[from_config]
     Mark,
 }
@@ -65,7 +63,6 @@ enum ByHand {
     Open(u64),
     OnlyFirst(u64),
     OnlySecond { value: u64 },
-    Both,
     Mark,
 }
 
@@ -75,7 +72,6 @@ impl Gated for ByHand {
         match self {
             ByHand::OnlyFirst(_) => role == TypeId::of::<First>(),
             ByHand::OnlySecond { .. } => role == TypeId::of::<Second>(),
-            ByHand::Both => role == TypeId::of::<First>() || role == TypeId::of::<Second>(),
             ByHand::Open(_) | ByHand::Mark => false,
         }
     }
@@ -94,7 +90,6 @@ fn every_derived_message_declares_what_its_hand_written_twin_does() {
             Message::OnlySecond { value: 3 },
             ByHand::OnlySecond { value: 3 },
         ),
-        (Message::Both, ByHand::Both),
         (Message::Mark, ByHand::Mark),
     ];
     for (derived, by_hand) in &pairs {
@@ -146,7 +141,6 @@ fn body(input: &ReceiveInput, message: Message) -> Response {
         Message::Open(value) | Message::OnlyFirst(value) | Message::OnlySecond { value } => {
             config.value = value;
         }
-        Message::Both => config.value += 1,
         Message::Mark => unreachable!(),
     }
     Response::set_state(borsh::to_vec(&config).unwrap())
@@ -279,13 +273,6 @@ fn a_handler_under_the_attribute_answers_as_the_hand_expansion_does() {
             false,
             Some(&held),
             &forwarded(&Message::OnlyFirst(6).into()),
-        ),
-        input(
-            config_actor,
-            Some(seat(PROGRAM)),
-            false,
-            Some(&held),
-            &forwarded(&Message::Both.into()),
         ),
         input(
             config_actor,
