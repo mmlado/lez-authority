@@ -2,96 +2,91 @@
 
 What the guard does at each actor for each kind of message, with the refusal that stops a wrong step. Notation: `P` is the program, whose id is its loader header account. `C` is the config account, `for_public_pda(P, seed)`. `(X, P)` is the actor of `P` on account `X`. Codes are those of the [refusal table](../README.md#refusals).
 
+Every role routes the same way. Its operations travel as library messages, `Wire::op::<R>(op)`, which start with the byte 255 and name the role, and its `Policy` decides who may install, nominate and renounce. The checks below are the defaults, which a role that answers to nobody keeps, as the admin does. The program's own messages keep the program's encoding.
+
 Every client transaction names its root actor, every actor it reaches, its signers, and a fee declaration whose payer signs. All hops here are sync, so a refusal anywhere drops every effect of the transaction and still charges the fee. The runtime fills `from` and `is_authorized` at each hop, and the guard reads identity from nothing else.
 
 ## Init
 
 ```text
-client   root (D, P)    actors [(D, P), (C, P)]    signers {D}    message Op::Init
+client   root (D, P)    actors [(D, P), (C, P)]    signers {D}    message Wire::op::<R>(Op::Init)
                         D is the program's own account P, or the genesis key
 
-hop 1    (D, P) seat    not a forward                              else E121
+hop 1    (D, P) seat    an operation is forwarded, never run here
                         is_authorized                              else E104
-                        forward to (C, P): Forwarded { via: None, inner }
+                        forward to (C, P): Forwarded { via: None, inner: the message as it arrived }
 
-hop 2    (C, P) config  not a hub message                          else E123
-                        from an actor of P                         else E119
+hop 2    (C, P) config  from an actor of P                         else E119
                         caller = { account: from.account_id, via: None }
-                        the account is empty, so only Init is accepted   else E101
+                        the operation names a role of the program  else E108
+                        the account is empty, so only the root role's Init is accepted   else E101
                         caller.account == P  (Deployer gate)       else E117
                         or caller.account == key  (Genesis gate)   else E115
                         caller.via is None                         else E117 / E115
                         slot = Held { holder: { D, via: None }, nominee: None }
-                        the config is written: Config::default() with that slot
+                        the config is written: the config's default with that slot
 ```
 
-`Init` on a non-empty config reaches the install with a decoded slot: a held slot is E118, a renounced one E102. The first write to `C` needs the PDA's evidence in the transaction, `PublicAccountEvidence::Pda { program, seed }`, which the LEZ wallet supplies from a `PublicPda` mention.
+`Init` on a non-empty config reaches the install with a decoded slot: a held slot is E118, a renounced one E102. An operation sent straight to the config is E122. The first write to `C` needs the PDA's evidence in the transaction, `PublicAccountEvidence::Pda { program, seed }`, which the LEZ wallet supplies from a `PublicPda` mention.
 
 ## An open message
 
 ```text
-client   root (C, P)    actors [(C, P)]    signers {}    message an open variant
+client   root (C, P)    actors [(C, P)]    signers {}    message an unmarked variant
 
-hop 1    (C, P) config  not a hub message, not a forward
-                        caller = None
+hop 1    (C, P) config  caller = None
                         state present and decodes                  else E101 / E109
-                        handler(ctx, config, message)              a require here is E122
-                        slot unchanged                             else E126
-                        the config is written
+                        handler(input, message)
+                        the handler's write decodes, every slot unchanged   else E109 / E126
 ```
 
-An open message may also travel through a seat. The handler then sees a caller, and a `require` would pass for the holder, but nothing forces the hop.
+An unmarked message sent to any other actor runs there: the guard steps aside, and the handler sees that actor's own state, as in a program without the guard.
 
-## A gated message
+## A message that needs a holder
 
 ```text
-client   root (A, P)    actors [(A, P), (C, P)]    signers {A}    message a gated variant
+client   root (A, P)    actors [(A, P), (C, P)]    signers {A}    message a variant marked #[only(R)]
 
-hop 1    (A, P) seat    not a forward                              else E121
-                        is_authorized                              else E104
+hop 1    (A, P) seat    is_authorized                              else E104
                         forward to (C, P): Forwarded { via: None, inner }
 
 hop 2    (C, P) config  from an actor of P                         else E119
                         caller = { A, via: None }
-                        inner decodes, and is not itself a forward or a hub message   else E108
+                        inner decodes, and is not itself a forward  else E108
                         state present and decodes                  else E101 / E109
-                        handler(ctx, config, message)
-                          ctx.require(&slot):
-                            slot Unset                             E131
-                            slot Renounced                         E102
+                        for each role R the message needs, R's slot:
+                            Unset                                  E131
+                            Renounced                              E102
                             holder.account != A                    E103
                             holder.via != caller.via               E120
-                        slot unchanged                             else E126
-                        the config is written
+                        handler(input, message)
+                        the handler's write decodes, every slot unchanged   else E109 / E126
+                        every message the handler sends goes to an actor of P   else E134
 ```
 
-## A gated message with a target, the hub
+Sent straight to the config, the message is E122. The handler sees `input.from` as `(A, P)` and `input.message` as the hop.
+
+## A message the config sends on, to a target
 
 ```text
 client   root (A, P)    actors [(A, P), (C, P), (T, P)]    signers {A}
 
 hop 1    (A, P) seat    as above
-hop 2    (C, P) config  as above, and in the handler after require:
-                          ctx.send(T, &message)                    needs require first, else E132
-                        the config is written, then Hub { inner } is sent sync to (T, P)
+hop 2    (C, P) config  as above, and the handler's response sends a #[from_config] message to (T, P)
 
-hop 3    (T, P) target  the message is a hub message
-                        from == Some((C, P)), by exact actor       else E123
-                        the program has a target handler           else E123
-                        inner decodes                              else E108
-                        the target's state decodes, default when empty   else E133
-                        target_handler(state, message), the state is written
+hop 3    (T, P) target  from == Some((C, P)), by exact actor       else E123
+                        handler(input, message) over the target's own state
 ```
 
-"From an actor of P" is not enough at hop 3, because any actor of `P` passes it: a stranger's seat could forward a hub message to a target. The target compares the whole actor. A hub message that reaches the config, or a seat, is E123 as well. Every actor reached must be in the transaction's actor list, so a client lists the target too.
+"From an actor of P" is not enough at hop 3, because any actor of `P` passes it: a stranger's seat could send the same message to a target. The target compares the whole actor. A `#[from_config]` message from a client, from another actor, or at the config itself, is E123. Every actor reached must be in the transaction's actor list, so a client lists the target too. An unmarked message the config sends runs at the target as well, but so would the same message from anyone, which is what the mark is for.
 
 ## Nominate and cancel
 
 ```text
-client   root (A, P)    actors [(A, P), (C, P)]    signers {A}    message Op::Nominate { next: N }
+client   root (A, P)    actors [(A, P), (C, P)]    signers {A}    message Wire::op::<R>(Op::Nominate { next: N })
 
-hop 1    (A, P) seat    as for a gated message
-hop 2    (C, P) config  require(slot) for A                        else E131 / E102 / E103 / E120
+hop 1    (A, P) seat    as for a message that needs a holder
+hop 2    (C, P) config  may_nominate, by default the holder is A    else E131 / E102 / E103 / E120
                         nominee = Some(N), or None when N is the all-zero id
                         the config is written
 ```
@@ -101,7 +96,7 @@ Nothing is checked about `N`. It is a bare id, it need not sign or be present, a
 ## Accept, by a key
 
 ```text
-client   root (N, P)    actors [(N, P), (C, P)]    signers {N}    message Op::Accept { pda_seed: None }
+client   root (N, P)    actors [(N, P), (C, P)]    signers {N}    message Wire::op::<R>(Op::Accept { pda_seed: None })
 
 hop 1    (N, P) seat    is_authorized                              else E104
 hop 2    (C, P) config  caller = { N, via: None }
@@ -121,7 +116,7 @@ hop 2    (C, P) config  caller = { N, via: None }
 client   root (R, G) as G requires    actors [(R, G), (N, P), (C, P)]    signers as G requires
 
 hop 0    (R, G)         G's own checks, then send sync to (N, P):
-                        Op::Accept { pda_seed: Some(s) }, pda_seeds {s}
+                        Wire::op::<R>(Op::Accept { pda_seed: Some(s) }), pda_seeds {s}
 
 hop 1    (N, P) seat    is_authorized, by the grant                else E104
                         forward: Forwarded { via: Some(G), inner }
@@ -137,28 +132,28 @@ The seed proof keeps a program that merely inherited the grant from accepting on
 ## Renounce
 
 ```text
-client   root (A, P)    actors [(A, P), (C, P)]    signers {A}    message Op::Renounce
+client   root (A, P)    actors [(A, P), (C, P)]    signers {A}    message Wire::op::<R>(Op::Renounce)
 
-hop 1    (A, P) seat    as for a gated message
-hop 2    (C, P) config  require(slot) for A                        else E131 / E102 / E103 / E120
-                        slot = Renounced, the nominee is gone
+hop 1    (A, P) seat    as for a message that needs a holder
+hop 2    (C, P) config  may_renounce, by default the holder is A    else E131 / E102 / E103 / E120
+                        slot = Renounced by default, the nominee is gone
 ```
 
-Afterwards every `require` is E102, and so are `Accept`, `Nominate`, `Renounce` and `Init`.
+Afterwards every message that needs the role is E102, and so are `Accept`, `Nominate`, `Renounce` and `Init`.
 
 ## A PDA holder acts
 
 ```text
 client   root (R, G) as G requires    actors [(R, G), (N, P), (C, P)] and any targets
 
-hop 0    (R, G)         G's own checks, then send sync to (N, P): the gated message, pda_seeds {s}
+hop 0    (R, G)         G's own checks, then send sync to (N, P): the message, pda_seeds {s}
 hop 1    (N, P) seat    is_authorized, by the grant                else E104
                         forward: Forwarded { via: Some(G), inner }
-hop 2    (C, P) config  require: holder == { N, via: Some(G) }     else E103 / E120
-                        the rest as for a gated message
+hop 2    (C, P) config  the declared holder: { N, via: Some(G) }   else E103 / E120
+                        the rest as for a message that needs a holder
 ```
 
-A PDA holds the role only after an accept, because `Init` installs a top-level account. The holder's `via` is fixed at accept, so `G` and only `G` can act for `N`, and `N` could not act at top level even if it had a key (E120). Grants travel on sync messages only, so `G` must send the gated message by a sync call, not an async one.
+A PDA holds the role only after an accept, because `Init` installs a top-level account. The holder's `via` is fixed at accept, so `G` and only `G` can act for `N`, and `N` could not act at top level even if it had a key (E120). Grants travel on sync messages only, so `G` must send the message by a sync call, not an async one. Because the grant travels with the call, the handler of such a message may send only to actors of `P` (E134).
 
 Verified on host in both repos. Not yet run on a sequencer: it needs a second program to play `G`.
 
@@ -166,9 +161,10 @@ Verified on host in both repos. Not yet run on a sequencer: it needs a second pr
 
 | Field | Rule |
 | --- | --- |
-| Root actor | the sender's seat `(sender, P)` for anything that needs the holder, the config `(C, P)` for an open message, the owning program's actor for a PDA holder |
+| Root actor | the sender's seat `(sender, P)` for an operation or a message that needs a holder, the owning program's actor for a PDA holder, and for any other message the actor it is meant for, the config `(C, P)` for config state |
+| Message | an operation as `Wire::op::<R>(op)`, any other message encoded as the program encodes it |
 | Actors | every `(account, program)` pair the transaction reaches, root included: the seat, the config, each target |
-| Signers | the sender of a gated message or an operation. An open message needs no signer besides the fee payer |
+| Signers | the sender of an operation or of a message that needs a holder. An open message needs no signer besides the fee payer |
 | Evidence | the config account's PDA evidence on its first write. A target that is a key account the wallet holds was admitted as a non-signing public account |
 | Fee | a fee declaration whose payer signs and has a nonce. The wallet's default `gas_limit` of 2,000,000 cycles covered three hops, see the admin repo's overhead numbers |
 

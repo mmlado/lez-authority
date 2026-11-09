@@ -1,0 +1,13 @@
+# The guard goes in front of a plain handler
+
+A program on the library stays the program its author would write without it: its own message enum and state, and a handler `fn(&ReceiveInput, Message) -> Response` under `lee_core::actor_entrypoint!`. The integrator adds a slot field, marks the messages that need a holder, `#[only(R)]`, and the ones only the config may send, `#[from_config]`, and puts the guard attribute on the handler. The attribute moves the handler's body into an inner function and puts the guard in front of it. The library's own messages, the operations and the hop, travel behind a reserved first byte, 255, so the program's enum hosts none of them and keeps its encoding. That caps the enum below 255 variants. Messages that need nobody run wherever they are sent. The guard checks the declared holders before the handler and the handler's response after it: no slot changed, and a message that came through a seat sends only to actors of the program, since a PDA holder's grant travels with the call. We traded the handler's in-arm checks, and the guard handing it a decoded config, for a program that reads as plain LEZ code, at the price of a second decode of the config, a few thousand cycles per message at the config.
+
+This supersedes [ADR-0002](0002-guard-around-a-plain-handler.md) where it hosts library variants in the program's enum and hands the handler a context.
+
+## Considered options
+
+- **A handler with a context, and hosted variants,** as ADR-0002 built it in `v0.1.0-alpha.1`. The handler took the context and the decoded config, and the enum hosted the library's variants. Replaced: the program read as a library program, not a LEZ one.
+- **An entry point macro of the library's** taking the handler and the seed, in place of LEZ's. Rejected: the handler still needed the context, and the entry point stopped being LEZ's.
+- **The slot on an account of its own.** Leaves the program's config untouched, but every gated message pays a third hop, about 10,000 cycles.
+- **The library's variants added to the program's enum by an attribute.** The program's own match over the enum would then have to handle them.
+- **A check the handler calls inside an arm.** With no context there is no caller to check. Declared holders also let the guard forward only the messages that need one, so the rest run where they are sent.
