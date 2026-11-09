@@ -69,7 +69,7 @@ fn run(
 
 #[test]
 fn codes_are_stable() {
-    let expected: [(AuthorityError, u16); 21] = [
+    let expected: [(AuthorityError, u16); 20] = [
         (AuthorityError::NotInitialized, 101),
         (AuthorityError::Renounced, 102),
         (AuthorityError::NotHolder, 103),
@@ -89,7 +89,6 @@ fn codes_are_stable() {
         (AuthorityError::NotFromConfig, 123),
         (AuthorityError::SlotChanged, 126),
         (AuthorityError::NotInstalled, 131),
-        (AuthorityError::ForeignSend, 134),
         (AuthorityError::LibrarySend, 135),
     ];
     for (error, code) in &expected {
@@ -738,12 +737,15 @@ fn a_config_only_message_from_anyone_else_is_refused() {
 }
 
 #[test]
-fn a_vouched_message_sends_only_within_the_program() {
+fn a_vouched_message_may_call_another_program() {
     let target = AccountId::new([7; 32]);
-    assert_eq!(
-        through_seat(KEY, Some(&two(Some(KEY))), Msg::ToElsewhere(target).into()).err(),
-        Some(Refusal::of::<First>(AuthorityError::ForeignSend))
-    );
+    let response = through_seat(KEY, Some(&two(Some(KEY))), Msg::ToElsewhere(target).into())
+        .ok()
+        .unwrap();
+    let [sent] = response.sync_messages.as_slice() else {
+        panic!("one message to the other program");
+    };
+    assert_eq!(sent.to, Actor::new(target, ELSEWHERE));
 }
 
 #[test]

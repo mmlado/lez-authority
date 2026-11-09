@@ -103,7 +103,7 @@ The attribute turns the handler into an inner function and puts `lez_authority::
 | One marked `#[from_config]` | at another actor of the program, only when the config account sent it |
 | Anything else | where it is sent, as in a program without the guard |
 
-At the config every program message needs an initialized config, and the guard refuses a handler whose write changed a slot. A message that came through a seat may send only to actors of this program. Its handler sees `input.from` as the sender's own actor and `input.message` as the hop. Wherever the handler runs, the guard refuses a response that sends the config a library message, which the config would take for a hop from that actor. A client builds a role's operation with `Wire::op::<R>(op)`.
+At the config every program message needs an initialized config, and the guard refuses a handler whose write changed a slot. The handler of a message that came through a seat sees `input.from` as the sender's own actor and `input.message` as the hop. Wherever the handler runs, the guard refuses a response that sends the config a library message, which the config would take for a hop from that actor. A client builds a role's operation with `Wire::op::<R>(op)`.
 
 ## Roles
 
@@ -174,10 +174,9 @@ A refusal is a panic, which is how a handler fails on LEZ. The text is `lez-auth
 | 123 | `NotFromConfig` | a `#[from_config]` message came from somewhere other than the config account, or reached the config |
 | 126 | `SlotChanged` | the handler's write changed a slot |
 | 131 | `NotInstalled` | the slot holds nobody |
-| 134 | `ForeignSend` | the handler of a message that came through a seat sent to another program |
 | 135 | `LibrarySend` | the handler's response sent a library message to the config account |
 
-Numbers up to 116 follow the v0.2 `AdminError` table where a refusal has the same meaning there. The gaps are v0.2 codes with no counterpart here, and 132 and 133, retired with the handler context of `v0.1.0-alpha.1`.
+Numbers up to 116 follow the v0.2 `AdminError` table where a refusal has the same meaning there. The gaps are v0.2 codes with no counterpart here, 132 and 133, retired with the handler context of `v0.1.0-alpha.1`, and 134, dropped before it was released.
 
 `guard` panics. `try_guard` returns the guard's refusals as a `Refusal`, the error with the role it names, for host tests. The handler's own panics stay panics.
 
@@ -192,7 +191,6 @@ Numbers up to 116 follow the v0.2 `AdminError` table where a refusal has the sam
 | The empty config account accepts only the root role's `Init`, under the gate | squatting the config before the deployer installs (E101, E117, E115) |
 | `Init` refuses a held or renounced slot | re-initialization (E118, E102) |
 | A `#[from_config]` message runs only when the config account itself sent it, by exact actor | another actor of the program, or a client, posing as the config (E123) |
-| A message that came through a seat sends only to actors of this program | a PDA holder's grant reaching a foreign program through the handler (E134) |
 | Only a seat sends the config a library message, wherever the handler runs | an open message at a holder's actor, sent unsigned, whose handler passes a client's bytes on as a hop the config would take for the holder's (E135) |
 | Every slot is compared around the handler | a handler replacing a holder (E126) |
 | The seed proof on a PDA accept, and `via` on the holder | a program that inherited a grant accepting on a PDA's behalf (E107), or acting for it later (E120) |
@@ -200,10 +198,11 @@ Numbers up to 116 follow the v0.2 `AdminError` table where a refusal has the sam
 
 Holes the library cannot close: a program deployed with a mutable header has a super-admin in the header key, so deploy immutable or keep that key under the holder's governance. A private actor may present a blinded alias as `from`, so the check fails closed and only public holders are supported.
 
+A PDA holder's grant comes with the call, so the handler, and every program it calls, holds the PDA's authority for that call. Make a PDA holder an account that holds no assets and no other role. A program that received the grant cannot act as the holder here: it reaches the holder's seat with itself as via (E120).
+
 ## What is not here
 
 - A message that needs a holder runs only at the config. Running one where it was sent, without the hop: [issue #1](https://github.com/mmlado/lez-authority/issues/1).
-- A message that came through a seat calling another program, such as a token transfer the holder signs off on. E134 refuses it.
 - Private holders and private config accounts.
 - Client code beyond `Wire::op`. The admin repo's runner is the reference client.
 

@@ -62,7 +62,6 @@ hop 2    (C, P) config  from an actor of P                         else E119
                             holder.via != caller.via               E120
                         handler(input, message)
                         the handler's write decodes, every slot unchanged   else E109 / E126
-                        every message the handler sends goes to an actor of P   else E134
                         no message the handler sends is a library message to (C, P)   else E135
 ```
 
@@ -156,7 +155,7 @@ hop 2    (C, P) config  the declared holder: { N, via: Some(G) }   else E103 / E
                         the rest as for a message that needs a holder
 ```
 
-A PDA holds the role only after an accept, because `Init` installs a top-level account. The holder's `via` is fixed at accept, so `G` and only `G` can act for `N`, and `N` could not act at top level even if it had a key (E120). Grants travel on sync messages only, so `G` must send the message by a sync call, not an async one. Because the grant travels with the call, the handler of such a message may send only to actors of `P` (E134).
+A PDA holds the role only after an accept, because `Init` installs a top-level account. The holder's `via` is fixed at accept, so `G` and only `G` can act for `N`, and `N` could not act at top level even if it had a key (E120). Grants travel on sync messages only, so `G` must send the message by a sync call, not an async one. The grant comes with the call, so the handler, and every program it calls, holds `N`'s authority for that call. A program that received the grant cannot act for `N` here: it reaches `N`'s seat with itself as via (E120). Make `N` an account that holds no assets and no other role.
 
 Verified on host in both repos. Not yet run on a sequencer: it needs a second program to play `G`.
 

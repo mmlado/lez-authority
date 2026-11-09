@@ -17,7 +17,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Policy<C>`: who may install, nominate and renounce a role, and what renounce leaves. The defaults are the rules of a role that answers to nobody. A role that answers to another overrides them and reads the other role's slot through the config.
 - `Roles`, implemented for `(A,)` and `(A, B)`: a program names its roles as a tuple, and the first one's `Init` creates the config.
 - `Refusal`, a refusal with the role it names, and `Ctx::check` for policies.
-- E134 `ForeignSend`: a message that came through a seat may send only to actors of this program.
 - E135 `LibrarySend`: wherever the handler runs, its response may not send the config account a library message.
 - `examples/owner_by_hand.rs`, the README's program without the macros, `tests/macros.rs`, and ADRs 0003 and 0004.
 

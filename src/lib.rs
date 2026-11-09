@@ -83,15 +83,13 @@ pub enum AuthorityError {
     SlotChanged,
     /// A message only the config sends came from somewhere else, or reached the config.
     NotFromConfig,
-    /// The handler of a message that came through a seat sent to another program.
-    ForeignSend,
     /// A handler sent a library message to the config account.
     LibrarySend,
 }
 
 impl AuthorityError {
     /// Every refusal, for the table test.
-    pub const ALL: [Self; 21] = [
+    pub const ALL: [Self; 20] = [
         Self::NotInitialized,
         Self::ConfigDoesNotDecode,
         Self::MessageDoesNotDecode,
@@ -111,7 +109,6 @@ impl AuthorityError {
         Self::ViaNotAllowed,
         Self::SlotChanged,
         Self::NotFromConfig,
-        Self::ForeignSend,
         Self::LibrarySend,
     ];
 
@@ -138,7 +135,6 @@ impl AuthorityError {
             Self::NotFromConfig => 123,
             Self::SlotChanged => 126,
             Self::NotInstalled => 131,
-            Self::ForeignSend => 134,
             Self::LibrarySend => 135,
         }
     }
@@ -190,9 +186,6 @@ impl AuthorityError {
             }
             Self::SlotChanged => format!("a handler must not change the {role} slot"),
             Self::NotFromConfig => "this message comes only from the config account".into(),
-            Self::ForeignSend => {
-                "a message that came through a seat sends only to actors of this program".into()
-            }
             Self::LibrarySend => {
                 "a handler must not send a library message to the config account".into()
             }
@@ -788,8 +781,7 @@ pub const fn seed(label: &[u8]) -> PdaSeed {
 /// - A library operation goes to the config through the sender's seat, and the guard runs it
 ///   there under the role's policy. The root role's `Init` creates the config.
 /// - A message that needs a holder goes the same way. At the config the guard checks the
-///   holder, runs the handler, and refuses a result that changed a slot or sent to another
-///   program.
+///   holder, runs the handler, and refuses a result that changed a slot.
 /// - A message only the config sends runs only when it came from the config account.
 /// - Anything else runs where it was sent, as in a program without the guard. At the config
 ///   that needs an initialized config, and the slots are checked afterwards.
@@ -798,7 +790,8 @@ pub const fn seed(label: &[u8]) -> PdaSeed {
 /// message, which the config would take for a hop from that actor.
 ///
 /// The handler of a message that came through a seat sees `input.from` as the sender's own
-/// actor and `input.message` as the hop.
+/// actor and `input.message` as the hop. A PDA holder's grant comes with the call, so every
+/// program the handler calls receives it too.
 ///
 /// # Panics
 /// On every refusal, with [`Refusal::text`] as the text.
@@ -946,8 +939,7 @@ where
     Ok(Response::set_state(bytes))
 }
 
-/// A program message at the config: the declared holders, the handler, then the slots and,
-/// for a vouched message, where the handler sent.
+/// A program message at the config: the declared holders, the handler, then the slots.
 fn at_the_config<Rs, C, M>(
     input: &ReceiveInput,
     program: AccountId,
@@ -984,16 +976,6 @@ where
         let after: C =
             borsh::from_slice(post).map_err(|_| refuse(AuthorityError::ConfigDoesNotDecode))?;
         Rs::unchanged(&after, &before)?;
-    }
-    // A PDA holder's grant travels with the call, so a vouched message stays in the program.
-    if caller.is_some() {
-        let sync = response.sync_messages.iter().map(|sent| sent.to);
-        let not_ours = sync
-            .chain(response.async_messages.iter().map(|sent| sent.to))
-            .any(|to| to.program_account_id != program);
-        if not_ours {
-            return Err(refuse(AuthorityError::ForeignSend));
-        }
     }
     Ok(response)
 }
