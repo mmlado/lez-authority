@@ -203,6 +203,8 @@ A PDA holder's grant comes with the call, so the handler, and every program it c
 ## What is not here
 
 - A message that needs a holder runs only at the config. Running one where it was sent, without the hop: [issue #1](https://github.com/mmlado/lez-authority/issues/1).
+- A check inside a handler arm, or one that depends on the message's data or the program's state. The guard checks a message by its variant, before the handler, so a conditional rule splits into an open variant and an `#[only(R)]` one.
+- The root role's `Init` with the program's own settings. It writes the config's `Default` with the holder installed, so make the default a safe state and set the rest with `#[only(R)]` messages.
 - Private holders and private config accounts.
 - Client code beyond `Wire::op`. The admin repo's runner is the reference client.
 
