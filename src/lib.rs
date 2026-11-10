@@ -2,29 +2,42 @@
 //!
 //! A program keeps its config on one well-known account, the config actor, a PDA of the
 //! program id and a seed. Inside that config sits an [`AuthoritySlot`] per role. A message
-//! that needs the holder's authority goes to the sender's own actor under the program
-//! first. That actor checks `is_authorized` and forwards the message to the config, naming
-//! the program that reached it. The config trusts the forward because only this program's
-//! own actors reach it with `from_own_program()`, and every one of them runs the same
-//! code: [`guard`].
+//! that needs a holder goes to the sender's own actor under the program first, the seat.
+//! The seat checks `is_authorized` and forwards the message to the config, naming the program
+//! that reached it. The config trusts the forward because only this program's own actors
+//! reach it with `from_own_program()`, and every one of them runs the same code: [`guard()`].
+//! The guard refuses a handler whose response sends the config a library message, so only a
+//! seat builds the hop.
 //!
-//! The program keeps its own message enum and its own handler. The enum hosts library
-//! variants through [`Hosts`]: the management operations [`Op`], which the guard runs
-//! without the handler, [`Forwarded`], the hop, and, for a program with targets, [`Hub`],
-//! a message the config sends to another actor of the program after the holder was
-//! verified. The handler receives a [`Ctx`] and calls it where a message needs the holder.
-//! The guard then checks that the slot changed only through the context.
+//! The program stays a plain LEZ program: its own message enum, its own state, and a handler
+//! `fn(&ReceiveInput, Message) -> Response` under `lee_core::actor_entrypoint!`. The
+//! [`guard`](macro@guard) attribute puts the guard in front of that handler. The library's
+//! own messages, the roles' management operations and the hop, travel as a [`Wire`] message
+//! behind a reserved first byte, so the program's enum hosts none of them. A program marks
+//! the messages that need a holder, and the ones only the config may send, through
+//! [`Gated`].
+//!
+//! A program names its roles as a tuple, [`Roles`]: one role, `(A,)`, or two, `(A, B)`.
+//! Each keeps its own slot in the config. The first creates the config.
 //!
 //! This crate is policy-free. Which role a slot plays comes from the consumer through
-//! [`Role`].
+//! [`Role`], and who may install, nominate and renounce through [`Policy`].
 
 #![warn(missing_docs)]
 
+// The macros name this crate by its path, which inside it needs this alias.
+extern crate self as lez_authority;
+
+/// Derive `HasSlot` from fields marked `#[slot(Role)]`, and `Gated` from messages marked
+/// `#[only(Role)]` or `#[from_config]`. Put [`guard`](macro@guard) on the handler. See
+/// [`lez_authority_macros`].
+pub use lez_authority_macros::{Gated, HasSlot, guard};
+
 use borsh::{BorshDeserialize, BorshSerialize};
-use std::collections::BTreeSet;
+use std::io::{Read, Write};
 
 use lee_core::account::{AccountId, Actor};
-use lee_core::program::{PdaSeed, ReceiveInput, Response, SyncMessage};
+use lee_core::program::{PdaSeed, ReceiveInput, Response};
 
 /// Why a message was refused. It becomes a panic, which is how a handler fails on LEZ, with
 /// a stable code in front of the sentence: `lez-authority/<role> E103: the signing account
@@ -32,11 +45,11 @@ use lee_core::program::{PdaSeed, ReceiveInput, Response, SyncMessage};
 /// ones keep theirs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuthorityError {
-    /// The config account holds no state yet, and the message is not the install operation.
+    /// The config account holds no state yet, and the message is not the root role's install.
     NotInitialized,
     /// The config account holds bytes that do not decode as the config.
     ConfigDoesNotDecode,
-    /// A message does not encode or decode.
+    /// A message does not encode or decode, or names a role the program does not have.
     MessageDoesNotDecode,
     /// The sender did not authorize the transaction at its own actor.
     MissingSignature,
@@ -44,7 +57,7 @@ pub enum AuthorityError {
     NotOwnProgram,
     /// A forwarded message arrived somewhere other than the config account.
     ForwardedNotAtConfig,
-    /// A message that needs the holder was sent straight to the config.
+    /// A message that needs a holder was sent straight to the config.
     NotThroughSeat,
     /// The slot holds nobody yet.
     NotInstalled,
@@ -66,19 +79,17 @@ pub enum AuthorityError {
     NotHolder,
     /// The caller is the holder's account but reached its actor through the wrong program.
     ViaNotAllowed,
-    /// The program's handler changed the slot by other means than the context.
+    /// The program's handler changed a slot.
     SlotChanged,
-    /// A hub message came from somewhere other than the config account, or reached the config.
+    /// A message only the config sends came from somewhere else, or reached the config.
     NotFromConfig,
-    /// The handler sent to a target before the holder was verified.
-    SendNeedsHolder,
-    /// The target's state does not decode.
-    TargetDoesNotDecode,
+    /// A handler sent a library message to the config account.
+    LibrarySend,
 }
 
 impl AuthorityError {
     /// Every refusal, for the table test.
-    pub const ALL: [Self; 21] = [
+    pub const ALL: [Self; 20] = [
         Self::NotInitialized,
         Self::ConfigDoesNotDecode,
         Self::MessageDoesNotDecode,
@@ -98,8 +109,7 @@ impl AuthorityError {
         Self::ViaNotAllowed,
         Self::SlotChanged,
         Self::NotFromConfig,
-        Self::SendNeedsHolder,
-        Self::TargetDoesNotDecode,
+        Self::LibrarySend,
     ];
 
     /// The stable code. Append-only: a number is never reused or renumbered.
@@ -122,11 +132,10 @@ impl AuthorityError {
             Self::ViaNotAllowed => 120,
             Self::ForwardedNotAtConfig => 121,
             Self::NotThroughSeat => 122,
+            Self::NotFromConfig => 123,
             Self::SlotChanged => 126,
             Self::NotInstalled => 131,
-            Self::NotFromConfig => 123,
-            Self::SendNeedsHolder => 132,
-            Self::TargetDoesNotDecode => 133,
+            Self::LibrarySend => 135,
         }
     }
 
@@ -175,17 +184,39 @@ impl AuthorityError {
             Self::ViaNotAllowed => {
                 format!("the {role} acts at top level, or through the program that made it the {role}")
             }
-            Self::SlotChanged => {
-                format!("a handler must not change the {role} slot except through the context")
+            Self::SlotChanged => format!("a handler must not change the {role} slot"),
+            Self::NotFromConfig => "this message comes only from the config account".into(),
+            Self::LibrarySend => {
+                "a handler must not send a library message to the config account".into()
             }
-            Self::NotFromConfig => {
-                "a hub message comes only from the config account, to a target".into()
-            }
-            Self::SendNeedsHolder => {
-                format!("sending to a target needs the {role}: require it first")
-            }
-            Self::TargetDoesNotDecode => "the target's state does not decode".into(),
         }
+    }
+}
+
+/// A refusal as a value: what was refused, and the role whose rule refused it. [`guard()`]
+/// panics with its [`text`](Self::text).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Refusal {
+    /// The role named in the text.
+    pub role: &'static str,
+    /// What was refused.
+    pub error: AuthorityError,
+}
+
+impl Refusal {
+    /// `error`, refused by role `R`'s rule.
+    #[must_use]
+    pub fn of<R: Role>(error: AuthorityError) -> Self {
+        Self {
+            role: R::NAME,
+            error,
+        }
+    }
+
+    /// The panic text.
+    #[must_use]
+    pub fn text(&self) -> String {
+        self.error.text(self.role)
     }
 }
 
@@ -199,7 +230,7 @@ pub struct Holder {
     pub via: Option<AccountId>,
 }
 
-/// The sender of a forwarded message, as the engine saw it: the account whose own actor
+/// The sender of a forwarded message, as the guard saw it: the account whose own actor
 /// vouched for it, and the program that reached that actor. Only the guard builds one.
 #[derive(Clone, Copy, Debug)]
 pub struct Caller {
@@ -290,17 +321,57 @@ impl AuthoritySlot {
 
 /// A role a slot plays, such as admin. Names the slot in panic text.
 pub trait Role: 'static {
-    /// The role's name, as it appears in panic text.
+    /// The role's name, as it appears in panic text and in a client's operation message.
     const NAME: &'static str;
 }
 
 /// Where role `R`'s slot lives inside a config. The guard runs the management operations
-/// on it and checks that the handler changed it only through the context.
+/// on it and refuses a handler that changed it.
 pub trait HasSlot<R: Role> {
     /// The slot.
     fn slot(&self) -> &AuthoritySlot;
     /// The slot, to change it.
     fn slot_mut(&mut self) -> &mut AuthoritySlot;
+}
+
+/// Who may install, nominate and renounce role `Self` in a config `C`. Every method holds
+/// the rule of a role that answers to nobody else, so such a role implements it empty. A
+/// role that answers to another, as a freeze authority answers to the admin, overrides the
+/// rules that differ and reads the other role's slot through `C`.
+pub trait Policy<C>: Role + Sized
+where
+    C: HasSlot<Self>,
+{
+    /// Who may install the first holder of the unset slot. By default whoever passes the
+    /// program's init gate, at top level.
+    ///
+    /// # Errors
+    /// The refusal that stops the install.
+    fn may_install(ctx: &Ctx, _config: &C) -> Result<(), Refusal> {
+        ctx.passes_gate::<Self>()
+    }
+
+    /// Who may nominate. By default the holder.
+    ///
+    /// # Errors
+    /// The refusal that stops the nomination.
+    fn may_nominate(ctx: &Ctx, config: &C) -> Result<(), Refusal> {
+        ctx.check::<Self>(HasSlot::<Self>::slot(config))
+    }
+
+    /// Who may renounce. By default the holder.
+    ///
+    /// # Errors
+    /// The refusal that stops the renounce.
+    fn may_renounce(ctx: &Ctx, config: &C) -> Result<(), Refusal> {
+        ctx.check::<Self>(HasSlot::<Self>::slot(config))
+    }
+
+    /// What renounce leaves in the slot. By default renounced, for good.
+    #[must_use]
+    fn renounced() -> AuthoritySlot {
+        AuthoritySlot::Renounced
+    }
 }
 
 /// Who may install the first holder.
@@ -313,8 +384,8 @@ pub enum InitGate {
     Genesis(AccountId),
 }
 
-/// A management operation on the slot. The program hosts it in its message enum, the
-/// guard runs it, and the handler never sees it.
+/// A management operation on a role's slot. A client sends it as a library message, the
+/// guard runs it under the role's [`Policy`], and the handler never sees it.
 #[derive(BorshSerialize, BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Op {
     /// Makes the sender the holder of an unset slot.
@@ -331,69 +402,115 @@ pub enum Op {
         /// The seed that derives the nominee under the program that reached its seat.
         pda_seed: Option<PdaSeed>,
     },
-    /// Empties the slot for good, nominee included. The sender must be the holder.
+    /// Gives the role up, nominee included. By default the sender must be the holder, and
+    /// the slot stays empty for good.
     Renounce,
 }
 
 /// A message the sender's own actor forwarded to the config, naming the program that
-/// reached it. The program hosts it in its message enum. Clients never send it: the
-/// config accepts it only from an actor of the same program.
+/// reached it. Clients never send it: the config accepts it only from an actor of the same
+/// program.
 #[derive(BorshSerialize, BorshDeserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Forwarded {
     /// The program that reached the sender's actor, or `None` at top level.
     pub via: Option<AccountId>,
-    /// The encoded original message.
+    /// The original message, as it arrived at the seat.
     pub inner: Vec<u8>,
 }
 
-/// A message the config account sends to another actor of the program, a target, after the
-/// holder was verified. The program hosts it in its message enum when it has targets. A
-/// target accepts it only from the config account itself.
+/// The library's own messages, which never reach the program's handler.
 #[derive(BorshSerialize, BorshDeserialize, Clone, Debug, PartialEq, Eq)]
-pub struct Hub {
-    /// The encoded message for the target, one of the program's own.
-    pub inner: Vec<u8>,
+pub enum LibraryMessage {
+    /// A management operation on the slot of the role with this name.
+    Op {
+        /// The role's [`Role::NAME`].
+        role: String,
+        /// The operation.
+        op: Op,
+    },
+    /// The hop from a seat to the config.
+    Forwarded(Forwarded),
 }
 
-/// A message enum that hosts the library's variants: [`Op`] and [`Forwarded`] always,
-/// [`Hub`] when the program has targets.
-pub trait Hosts: BorshSerialize + BorshDeserialize {
-    /// Wraps a hop in its hosting variant.
-    fn forwarded(hop: Forwarded) -> Self;
-    /// Unwraps the hop, or gives the message back.
-    ///
-    /// # Errors
-    /// The message itself when it is not the hop.
-    fn into_forwarded(self) -> Result<Forwarded, Self>;
-    /// Unwraps a management operation, or gives the message back.
-    ///
-    /// # Errors
-    /// The message itself when it is not an operation.
-    fn into_op(self) -> Result<Op, Self>;
-    /// Wraps a hub message in its hosting variant. Only a program with targets hosts one.
-    fn hub(_hub: Hub) -> Self {
-        panic!("lez-authority: this program hosts no hub variant, so it cannot send to targets")
-    }
-    /// Unwraps a hub message, or gives the message back.
-    ///
-    /// # Errors
-    /// The message itself when it is not a hub message.
-    fn into_hub(self) -> Result<Hub, Self> {
-        Err(self)
+/// The first byte of a library message. A program's message enum must stay below 255
+/// variants, so that none of its messages starts with it.
+pub const LIBRARY_TAG: u8 = 255;
+
+/// What arrives at a guarded handler: one of the program's own messages, encoded as the
+/// program encodes it, or a library message behind [`LIBRARY_TAG`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Wire<M> {
+    /// One of the program's messages.
+    Program(M),
+    /// One of the library's.
+    Library(LibraryMessage),
+}
+
+impl<M> Wire<M> {
+    /// A client's message for one of role `R`'s management operations.
+    #[must_use]
+    pub fn op<R: Role>(op: Op) -> Self {
+        Self::Library(LibraryMessage::Op {
+            role: R::NAME.into(),
+            op,
+        })
     }
 }
 
-/// What the guard hands the handler: who is speaking, if the message came through the
-/// sender's own actor, and the operations on the slot. Every method panics on refusal,
-/// which is how a handler fails on LEZ.
+impl<M> From<M> for Wire<M> {
+    fn from(message: M) -> Self {
+        Self::Program(message)
+    }
+}
+
+impl<M: BorshSerialize> BorshSerialize for Wire<M> {
+    fn serialize<W: Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        match self {
+            Self::Program(message) => message.serialize(writer),
+            Self::Library(message) => {
+                writer.write_all(&[LIBRARY_TAG])?;
+                message.serialize(writer)
+            }
+        }
+    }
+}
+
+impl<M: BorshDeserialize> BorshDeserialize for Wire<M> {
+    fn deserialize_reader<R: Read>(reader: &mut R) -> std::io::Result<Self> {
+        let mut first = [0u8; 1];
+        reader.read_exact(&mut first)?;
+        if first[0] == LIBRARY_TAG {
+            LibraryMessage::deserialize_reader(reader).map(Self::Library)
+        } else {
+            M::deserialize_reader(&mut (&first[..]).chain(reader)).map(Self::Program)
+        }
+    }
+}
+
+/// What the program's messages declare to the guard. Derive it with `#[only(Role)]` on a
+/// message that needs a role's holder, the way `onlyOwner` marks a Solidity function, and
+/// `#[from_config]` on one that only the config account may send.
+pub trait Gated {
+    /// Whether this message needs role `R`'s holder. The guard then takes it only through
+    /// the sender's own actor and checks the holder before the handler runs. A message that
+    /// needs two roles needs one caller holding both.
+    fn needs<R: Role>(&self) -> bool {
+        false
+    }
+
+    /// Whether only the config account may send this message, as it does to the program's
+    /// other actors.
+    fn only_from_config(&self) -> bool {
+        false
+    }
+}
+
+/// What a [`Policy`] sees: who is speaking, if the message came through the sender's own
+/// actor, and the program's init gate.
 pub struct Ctx {
     caller: Option<Caller>,
-    role: &'static str,
     program: AccountId,
     gate: InitGate,
-    expected: Option<AuthoritySlot>,
-    verified: bool,
-    outbox: Vec<(AccountId, Vec<u8>)>,
 }
 
 impl Ctx {
@@ -403,106 +520,235 @@ impl Ctx {
         self.caller.as_ref()
     }
 
-    /// Panics unless the message came through the sender's own actor and the sender is
-    /// the holder. Afterwards the handler may send to targets.
-    pub fn require(&mut self, slot: &AuthoritySlot) {
-        let caller = self.vouched();
-        if let Err(error) = slot.check(caller) {
-            self.fail(&error);
-        }
-        self.verified = true;
+    /// Whether the message came through the sender's own actor and the sender holds role
+    /// `R` in `slot`.
+    ///
+    /// # Errors
+    /// `NotThroughSeat`, or the slot's refusal of the sender, naming `R`.
+    pub fn check<R: Role>(&self, slot: &AuthoritySlot) -> Result<(), Refusal> {
+        slot.check(self.vouched::<R>()?).map_err(Refusal::of::<R>)
     }
 
-    /// Sends `message` to `target`'s own actor under the program, after the handler returns.
-    /// The target receives it as a hub message and knows it came from the config account.
-    /// Panics unless the holder was verified first.
-    pub fn send<M: Hosts>(&mut self, target: AccountId, message: &M) {
-        if !self.verified {
-            self.fail(&AuthorityError::SendNeedsHolder);
-        }
-        let inner = borsh::to_vec(message).expect("a message encodes");
-        let hub = borsh::to_vec(&M::hub(Hub { inner })).expect("a message encodes");
-        self.outbox.push((target, hub));
+    fn vouched<R: Role>(&self) -> Result<&Caller, Refusal> {
+        self.caller
+            .as_ref()
+            .ok_or_else(|| Refusal::of::<R>(AuthorityError::NotThroughSeat))
     }
 
-    /// Installs the sender as the holder of an unset slot, if the sender passes the init
-    /// gate: the program's own account, or the genesis key, at top level. The hosted
-    /// [`Op::Init`] does this without the handler; call it yourself from an init message of
-    /// your own.
-    pub fn install(&mut self, slot: &mut AuthoritySlot) {
-        let caller = *self.vouched();
+    /// The init gate: the program's own account, or the genesis key, at top level.
+    fn passes_gate<R: Role>(&self) -> Result<(), Refusal> {
+        let caller = self.vouched::<R>()?;
         let (allowed, refusal) = match self.gate {
             InitGate::Deployer => (self.program, AuthorityError::NotDeployer),
             InitGate::Genesis(key) => (key, AuthorityError::NotGenesis),
         };
         if caller.account != allowed || caller.via.is_some() {
-            self.fail(&refusal);
+            return Err(Refusal::of::<R>(refusal));
         }
-        match slot {
-            AuthoritySlot::Unset => {}
-            AuthoritySlot::Held { .. } => self.fail(&AuthorityError::AlreadyInstalled),
-            AuthoritySlot::Renounced => self.fail(&AuthorityError::Renounced),
+        Ok(())
+    }
+}
+
+/// One management operation on `R`'s slot, under `R`'s policy.
+fn run_op<R, C>(ctx: &Ctx, config: &mut C, op: Op) -> Result<(), Refusal>
+where
+    R: Policy<C>,
+    C: HasSlot<R>,
+{
+    let refuse = Refusal::of::<R>;
+    match op {
+        Op::Init => {
+            R::may_install(ctx, config)?;
+            let caller = *ctx.vouched::<R>()?;
+            let slot = HasSlot::<R>::slot_mut(config);
+            match slot {
+                AuthoritySlot::Unset => {}
+                AuthoritySlot::Held { .. } => return Err(refuse(AuthorityError::AlreadyInstalled)),
+                AuthoritySlot::Renounced => return Err(refuse(AuthorityError::Renounced)),
+            }
+            *slot = AuthoritySlot::held(Holder {
+                account: caller.account,
+                via: caller.via,
+            });
         }
-        *slot = AuthoritySlot::held(Holder {
-            account: caller.account,
-            via: caller.via,
-        });
-        self.expected = Some(slot.clone());
+        Op::Nominate { next } => {
+            R::may_nominate(ctx, config)?;
+            match HasSlot::<R>::slot_mut(config) {
+                AuthoritySlot::Held { nominee, .. } => {
+                    *nominee = (next != AccountId::default()).then_some(next);
+                }
+                AuthoritySlot::Unset => return Err(refuse(AuthorityError::NotInstalled)),
+                AuthoritySlot::Renounced => return Err(refuse(AuthorityError::Renounced)),
+            }
+        }
+        Op::Accept { pda_seed } => {
+            let caller = *ctx.vouched::<R>()?;
+            let slot = HasSlot::<R>::slot_mut(config);
+            let pending = match slot {
+                AuthoritySlot::Unset => return Err(refuse(AuthorityError::NotInstalled)),
+                AuthoritySlot::Renounced => return Err(refuse(AuthorityError::Renounced)),
+                AuthoritySlot::Held { nominee, .. } => *nominee,
+            };
+            let Some(nominee) = pending else {
+                return Err(refuse(AuthorityError::NoNomination));
+            };
+            if nominee != caller.account {
+                return Err(refuse(AuthorityError::NotNominee));
+            }
+            match (caller.via, pda_seed) {
+                (None, None) => {}
+                (Some(program), Some(seed))
+                    if AccountId::for_public_pda(&program, &seed) == caller.account => {}
+                _ => return Err(refuse(AuthorityError::SeedProofFailed)),
+            }
+            *slot = AuthoritySlot::held(Holder {
+                account: caller.account,
+                via: caller.via,
+            });
+        }
+        Op::Renounce => {
+            R::may_renounce(ctx, config)?;
+            *HasSlot::<R>::slot_mut(config) = R::renounced();
+        }
+    }
+    Ok(())
+}
+
+/// The holder a message declares it needs, checked before the handler.
+fn gate<R, C, M>(ctx: &Ctx, config: &C, message: &M) -> Result<(), Refusal>
+where
+    R: Role,
+    C: HasSlot<R>,
+    M: Gated,
+{
+    if message.needs::<R>() {
+        ctx.check::<R>(HasSlot::<R>::slot(config))?;
+    }
+    Ok(())
+}
+
+/// The handler must leave every slot as it found it.
+fn unchanged<R, C>(config: &C, before: &AuthoritySlot) -> Result<(), Refusal>
+where
+    R: Role,
+    C: HasSlot<R>,
+{
+    if HasSlot::<R>::slot(config) == before {
+        Ok(())
+    } else {
+        Err(Refusal::of::<R>(AuthorityError::SlotChanged))
+    }
+}
+
+mod sealed {
+    pub trait Sealed {}
+    impl<A> Sealed for (A,) {}
+    impl<A, B> Sealed for (A, B) {}
+}
+
+/// A program's roles, as a tuple: one role, `(A,)`, or two, `(A, B)`. Each role has its own
+/// slot in the config, through [`HasSlot`], and its own [`Policy`]. The first role is the
+/// root: its install creates the config, and the guard's own refusals name it.
+pub trait Roles<C, M>: sealed::Sealed {
+    /// The root role's name.
+    const ROOT: &'static str;
+    /// The place in the tuple of the role with this name.
+    #[doc(hidden)]
+    fn index(name: &str) -> Option<usize>;
+    /// Runs an operation of the role at `role`.
+    #[doc(hidden)]
+    fn run_op(ctx: &Ctx, config: &mut C, role: usize, op: Op) -> Result<(), Refusal>;
+    /// Whether the message needs any role's holder.
+    #[doc(hidden)]
+    fn needs_any(message: &M) -> bool;
+    /// Checks the holders the message declares it needs.
+    #[doc(hidden)]
+    fn gate(ctx: &Ctx, config: &C, message: &M) -> Result<(), Refusal>;
+    /// Every role's slot, in order.
+    #[doc(hidden)]
+    fn slots(config: &C) -> Vec<AuthoritySlot>;
+    /// Refuses a slot that differs from `before`.
+    #[doc(hidden)]
+    fn unchanged(config: &C, before: &[AuthoritySlot]) -> Result<(), Refusal>;
+}
+
+impl<C, M, A> Roles<C, M> for (A,)
+where
+    A: Policy<C>,
+    C: HasSlot<A>,
+    M: Gated,
+{
+    const ROOT: &'static str = A::NAME;
+
+    fn index(name: &str) -> Option<usize> {
+        (name == A::NAME).then_some(0)
     }
 
-    /// The sender, who must be the holder, offers the role to `next`. The all-zero id cancels.
-    pub fn nominate(&mut self, slot: &mut AuthoritySlot, next: AccountId) {
-        self.require(slot);
-        if let AuthoritySlot::Held { nominee, .. } = slot {
-            *nominee = (next != AccountId::default()).then_some(next);
-        }
-        self.expected = Some(slot.clone());
+    fn run_op(ctx: &Ctx, config: &mut C, _role: usize, op: Op) -> Result<(), Refusal> {
+        run_op::<A, C>(ctx, config, op)
     }
 
-    /// The sender, who must be the pending nominee, takes the role. A key at top level needs
-    /// no seed. A PDA reached through its program must carry the seed that derives it there.
-    pub fn accept(&mut self, slot: &mut AuthoritySlot, pda_seed: Option<PdaSeed>) {
-        let caller = *self.vouched();
-        let pending = match slot {
-            AuthoritySlot::Unset => self.fail(&AuthorityError::NotInstalled),
-            AuthoritySlot::Renounced => self.fail(&AuthorityError::Renounced),
-            AuthoritySlot::Held { nominee, .. } => *nominee,
-        };
-        let Some(nominee) = pending else {
-            self.fail(&AuthorityError::NoNomination)
-        };
-        if nominee != caller.account {
-            self.fail(&AuthorityError::NotNominee);
-        }
-        match (caller.via, pda_seed) {
-            (None, None) => {}
-            (Some(program), Some(seed))
-                if AccountId::for_public_pda(&program, &seed) == caller.account => {}
-            _ => self.fail(&AuthorityError::SeedProofFailed),
-        }
-        *slot = AuthoritySlot::held(Holder {
-            account: caller.account,
-            via: caller.via,
-        });
-        self.expected = Some(slot.clone());
+    fn needs_any(message: &M) -> bool {
+        message.needs::<A>()
     }
 
-    /// Empties the slot for good, nominee included. The sender must be the holder.
-    pub fn renounce(&mut self, slot: &mut AuthoritySlot) {
-        self.require(slot);
-        *slot = AuthoritySlot::Renounced;
-        self.expected = Some(slot.clone());
+    fn gate(ctx: &Ctx, config: &C, message: &M) -> Result<(), Refusal> {
+        gate::<A, C, M>(ctx, config, message)
     }
 
-    fn vouched(&self) -> &Caller {
-        match &self.caller {
-            Some(caller) => caller,
-            None => self.fail(&AuthorityError::NotThroughSeat),
+    fn slots(config: &C) -> Vec<AuthoritySlot> {
+        vec![HasSlot::<A>::slot(config).clone()]
+    }
+
+    fn unchanged(config: &C, before: &[AuthoritySlot]) -> Result<(), Refusal> {
+        unchanged::<A, C>(config, &before[0])
+    }
+}
+
+impl<C, M, A, B> Roles<C, M> for (A, B)
+where
+    A: Policy<C>,
+    B: Policy<C>,
+    C: HasSlot<A> + HasSlot<B>,
+    M: Gated,
+{
+    const ROOT: &'static str = A::NAME;
+
+    fn index(name: &str) -> Option<usize> {
+        if name == A::NAME {
+            Some(0)
+        } else {
+            (name == B::NAME).then_some(1)
         }
     }
 
-    fn fail(&self, error: &AuthorityError) -> ! {
-        panic!("{}", error.text(self.role))
+    fn run_op(ctx: &Ctx, config: &mut C, role: usize, op: Op) -> Result<(), Refusal> {
+        if role == 0 {
+            run_op::<A, C>(ctx, config, op)
+        } else {
+            run_op::<B, C>(ctx, config, op)
+        }
+    }
+
+    fn needs_any(message: &M) -> bool {
+        message.needs::<A>() || message.needs::<B>()
+    }
+
+    fn gate(ctx: &Ctx, config: &C, message: &M) -> Result<(), Refusal> {
+        gate::<A, C, M>(ctx, config, message)?;
+        gate::<B, C, M>(ctx, config, message)
+    }
+
+    fn slots(config: &C) -> Vec<AuthoritySlot> {
+        vec![
+            HasSlot::<A>::slot(config).clone(),
+            HasSlot::<B>::slot(config).clone(),
+        ]
+    }
+
+    fn unchanged(config: &C, before: &[AuthoritySlot]) -> Result<(), Refusal> {
+        unchanged::<A, C>(config, &before[0])?;
+        unchanged::<B, C>(config, &before[1])
     }
 }
 
@@ -528,532 +774,239 @@ pub const fn seed(label: &[u8]) -> PdaSeed {
     PdaSeed::new(bytes)
 }
 
-/// Runs `handler` behind the hop, the management operations and the slot check, for a
-/// program without targets. `gate` says who may send the first `Init`.
+/// Runs `handler` behind the guard. The [`guard`](macro@guard) attribute writes this call,
+/// and a program may write it itself. `Rs` is the program's roles, `(A,)` or `(A, B)`, `C`
+/// the config the program keeps on the config account, and `gate` says who may install the
+/// root role.
 ///
-/// At any actor other than the config, the message is forwarded to the config if the
-/// sender authorized the transaction. At the config, a forwarded message is unwrapped
-/// into a [`Caller`] and the config is loaded. An empty account accepts only the install
-/// operation, which creates the config. A management operation then runs on the slot
-/// without the handler. Any other message goes to the handler, and the slot is checked
-/// against what the context allowed. The config is written back either way.
+/// - A library operation goes to the config through the sender's seat, and the guard runs it
+///   there under the role's policy. The root role's `Init` creates the config.
+/// - A message that needs a holder goes the same way. At the config the guard checks the
+///   holder, runs the handler, and refuses a result that changed a slot.
+/// - A message only the config sends runs only when it came from the config account.
+/// - Anything else runs where it was sent, as in a program without the guard. At the config
+///   that needs an initialized config, and the slots are checked afterwards.
+///
+/// Wherever the handler runs, the guard refuses a response that sends the config a library
+/// message, which the config would take for a hop from that actor.
+///
+/// The handler of a message that came through a seat sees `input.from` as the sender's own
+/// actor and `input.message` as the hop. A PDA holder's grant comes with the call, so every
+/// program the handler calls receives it too.
 ///
 /// # Panics
-/// On every refusal, with [`AuthorityError::text`] as the text.
-pub fn guard<R, C, M>(
+/// On every refusal, with [`Refusal::text`] as the text.
+pub fn guard<Rs, C, M>(
     input: &ReceiveInput,
     seed: &PdaSeed,
     gate: InitGate,
-    message: M,
-    handler: impl FnOnce(&mut Ctx, &mut C, M),
+    message: Wire<M>,
+    handler: impl FnOnce(&ReceiveInput, M) -> Response,
 ) -> Response
 where
-    R: Role,
-    C: BorshSerialize + BorshDeserialize + Default + HasSlot<R>,
-    M: Hosts,
+    Rs: Roles<C, M>,
+    C: BorshSerialize + BorshDeserialize + Default,
+    M: Gated + BorshDeserialize,
 {
-    match try_guard::<R, C, M>(input, seed, gate, message, handler) {
+    match try_guard::<Rs, C, M>(input, seed, gate, message, handler) {
         Ok(response) => response,
-        Err(error) => panic!("{}", error.text(R::NAME)),
+        Err(refusal) => panic!("{}", refusal.text()),
     }
 }
 
-/// [`guard`] with the guard's own refusals as a value. The context still panics.
+/// [`guard()`] with the guard's refusals as a value. The handler's own panics stay panics.
 ///
 /// # Errors
-/// See [`AuthorityError`].
-pub fn try_guard<R, C, M>(
+/// See [`Refusal`].
+pub fn try_guard<Rs, C, M>(
     input: &ReceiveInput,
     seed: &PdaSeed,
     gate: InitGate,
-    message: M,
-    handler: impl FnOnce(&mut Ctx, &mut C, M),
-) -> Result<Response, AuthorityError>
+    message: Wire<M>,
+    handler: impl FnOnce(&ReceiveInput, M) -> Response,
+) -> Result<Response, Refusal>
 where
-    R: Role,
-    C: BorshSerialize + BorshDeserialize + Default + HasSlot<R>,
-    M: Hosts,
+    Rs: Roles<C, M>,
+    C: BorshSerialize + BorshDeserialize + Default,
+    M: Gated + BorshDeserialize,
 {
-    engine::<R, C, (), M>(input, seed, gate, message, handler, None::<fn(&mut (), M)>)
-}
-
-/// [`guard`] for a program with targets. A hub message that reaches an actor other than
-/// the config is accepted only when it came from the config account itself. The target's
-/// own state, `T`, is loaded (default when the account is empty), `target_handler` runs,
-/// and the state is written back.
-///
-/// # Panics
-/// On every refusal, with [`AuthorityError::text`] as the text.
-pub fn guard_with_targets<R, C, T, M>(
-    input: &ReceiveInput,
-    seed: &PdaSeed,
-    gate: InitGate,
-    message: M,
-    handler: impl FnOnce(&mut Ctx, &mut C, M),
-    target_handler: impl FnOnce(&mut T, M),
-) -> Response
-where
-    R: Role,
-    C: BorshSerialize + BorshDeserialize + Default + HasSlot<R>,
-    T: BorshSerialize + BorshDeserialize + Default,
-    M: Hosts,
-{
-    match engine::<R, C, T, M>(input, seed, gate, message, handler, Some(target_handler)) {
-        Ok(response) => response,
-        Err(error) => panic!("{}", error.text(R::NAME)),
-    }
-}
-
-/// [`guard_with_targets`] with the guard's own refusals as a value.
-///
-/// # Errors
-/// See [`AuthorityError`].
-pub fn try_guard_with_targets<R, C, T, M>(
-    input: &ReceiveInput,
-    seed: &PdaSeed,
-    gate: InitGate,
-    message: M,
-    handler: impl FnOnce(&mut Ctx, &mut C, M),
-    target_handler: impl FnOnce(&mut T, M),
-) -> Result<Response, AuthorityError>
-where
-    R: Role,
-    C: BorshSerialize + BorshDeserialize + Default + HasSlot<R>,
-    T: BorshSerialize + BorshDeserialize + Default,
-    M: Hosts,
-{
-    engine::<R, C, T, M>(input, seed, gate, message, handler, Some(target_handler))
-}
-
-fn engine<R, C, T, M>(
-    input: &ReceiveInput,
-    seed: &PdaSeed,
-    gate: InitGate,
-    message: M,
-    handler: impl FnOnce(&mut Ctx, &mut C, M),
-    target_handler: Option<impl FnOnce(&mut T, M)>,
-) -> Result<Response, AuthorityError>
-where
-    R: Role,
-    C: BorshSerialize + BorshDeserialize + Default + HasSlot<R>,
-    T: BorshSerialize + BorshDeserialize + Default,
-    M: Hosts,
-{
+    let refuse = |error| Refusal {
+        role: Rs::ROOT,
+        error,
+    };
     let program = input.receiver.program_account_id;
     let config_actor = Actor::new(config_account(program, seed), program);
-    if input.receiver != config_actor {
-        return match message.into_hub() {
-            Ok(hub) => at_target(input, config_actor, hub, target_handler),
-            Err(message) => seat(input, config_actor, message),
-        };
-    }
-    let message = match message.into_hub() {
-        Ok(_) => return Err(AuthorityError::NotFromConfig),
-        Err(message) => message,
+    let at_config = input.receiver == config_actor;
+    let from_config = input.from == Some(config_actor);
+    // The config trusts a hop from any actor of this program, so a handler must not send one.
+    let handler = |input: &ReceiveInput, message: M| {
+        let response = handler(input, message);
+        if sends_library_message(&response, config_actor) {
+            return Err(refuse(AuthorityError::LibrarySend));
+        }
+        Ok(response)
     };
-    let (caller, message) = match message.into_forwarded() {
-        Ok(hop) => {
-            if !input.from_own_program() {
-                return Err(AuthorityError::NotOwnProgram);
+    match message {
+        Wire::Program(message) => {
+            if message.only_from_config() {
+                if at_config || !from_config {
+                    return Err(refuse(AuthorityError::NotFromConfig));
+                }
+                return handler(input, message);
             }
-            let from = input.from.ok_or(AuthorityError::NotOwnProgram)?;
+            if !at_config {
+                if from_config || !Rs::needs_any(&message) {
+                    return handler(input, message);
+                }
+                return seat(input, config_actor).map_err(refuse);
+            }
+            at_the_config::<Rs, C, M>(input, program, gate, None, message, handler)
+        }
+        Wire::Library(LibraryMessage::Op { .. }) => {
+            if at_config {
+                return Err(refuse(AuthorityError::NotThroughSeat));
+            }
+            seat(input, config_actor).map_err(refuse)
+        }
+        Wire::Library(LibraryMessage::Forwarded(hop)) => {
+            if !at_config {
+                return Err(refuse(AuthorityError::ForwardedNotAtConfig));
+            }
+            if !input.from_own_program() {
+                return Err(refuse(AuthorityError::NotOwnProgram));
+            }
+            let from = input
+                .from
+                .ok_or_else(|| refuse(AuthorityError::NotOwnProgram))?;
             let caller = Caller {
                 account: from.account_id,
                 via: hop.via,
             };
-            let inner: M =
-                borsh::from_slice(&hop.inner).map_err(|_| AuthorityError::MessageDoesNotDecode)?;
-            let inner = match inner.into_forwarded() {
-                Ok(_) => return Err(AuthorityError::MessageDoesNotDecode),
-                Err(message) => message,
-            };
-            let inner = match inner.into_hub() {
-                Ok(_) => return Err(AuthorityError::MessageDoesNotDecode),
-                Err(message) => message,
-            };
-            (Some(caller), inner)
+            let inner: Wire<M> = borsh::from_slice(&hop.inner)
+                .map_err(|_| refuse(AuthorityError::MessageDoesNotDecode))?;
+            match inner {
+                Wire::Library(LibraryMessage::Op { role, op }) => {
+                    let role = Rs::index(&role)
+                        .ok_or_else(|| refuse(AuthorityError::MessageDoesNotDecode))?;
+                    manage::<Rs, C, M>(input, program, gate, caller, role, op)
+                }
+                Wire::Library(LibraryMessage::Forwarded(_)) => {
+                    Err(refuse(AuthorityError::MessageDoesNotDecode))
+                }
+                Wire::Program(message) => {
+                    if message.only_from_config() {
+                        return Err(refuse(AuthorityError::NotFromConfig));
+                    }
+                    at_the_config::<Rs, C, M>(input, program, gate, Some(caller), message, handler)
+                }
+            }
         }
-        Err(message) => (None, message),
+    }
+}
+
+/// A management operation at the config, which the root role's `Init` may create.
+fn manage<Rs, C, M>(
+    input: &ReceiveInput,
+    program: AccountId,
+    gate: InitGate,
+    caller: Caller,
+    role: usize,
+    op: Op,
+) -> Result<Response, Refusal>
+where
+    Rs: Roles<C, M>,
+    C: BorshSerialize + BorshDeserialize + Default,
+{
+    let refuse = |error| Refusal {
+        role: Rs::ROOT,
+        error,
     };
-    let op = message.into_op();
     let pre: &[u8] = &input.pre_state;
     let mut config: C = if pre.is_empty() {
-        if !matches!(op, Ok(Op::Init)) {
-            return Err(AuthorityError::NotInitialized);
+        if role != 0 || op != Op::Init {
+            return Err(refuse(AuthorityError::NotInitialized));
         }
         C::default()
     } else {
-        borsh::from_slice(pre).map_err(|_| AuthorityError::ConfigDoesNotDecode)?
+        borsh::from_slice(pre).map_err(|_| refuse(AuthorityError::ConfigDoesNotDecode))?
     };
-    let before = HasSlot::<R>::slot(&config).clone();
-    let mut ctx = Ctx {
-        caller,
-        role: R::NAME,
+    let ctx = Ctx {
+        caller: Some(caller),
         program,
         gate,
-        expected: None,
-        verified: false,
-        outbox: Vec::new(),
     };
-    match op {
-        Ok(Op::Init) => ctx.install(HasSlot::<R>::slot_mut(&mut config)),
-        Ok(Op::Nominate { next }) => ctx.nominate(HasSlot::<R>::slot_mut(&mut config), next),
-        Ok(Op::Accept { pda_seed }) => ctx.accept(HasSlot::<R>::slot_mut(&mut config), pda_seed),
-        Ok(Op::Renounce) => ctx.renounce(HasSlot::<R>::slot_mut(&mut config)),
-        Err(message) => handler(&mut ctx, &mut config, message),
+    Rs::run_op(&ctx, &mut config, role, op)?;
+    let bytes = borsh::to_vec(&config).map_err(|_| refuse(AuthorityError::ConfigDoesNotDecode))?;
+    Ok(Response::set_state(bytes))
+}
+
+/// A program message at the config: the declared holders, the handler, then the slots.
+fn at_the_config<Rs, C, M>(
+    input: &ReceiveInput,
+    program: AccountId,
+    gate: InitGate,
+    caller: Option<Caller>,
+    message: M,
+    handler: impl FnOnce(&ReceiveInput, M) -> Result<Response, Refusal>,
+) -> Result<Response, Refusal>
+where
+    Rs: Roles<C, M>,
+    C: BorshSerialize + BorshDeserialize + Default,
+    M: Gated,
+{
+    let refuse = |error| Refusal {
+        role: Rs::ROOT,
+        error,
+    };
+    let pre: &[u8] = &input.pre_state;
+    if pre.is_empty() {
+        return Err(refuse(AuthorityError::NotInitialized));
     }
-    let expected = ctx.expected.unwrap_or(before);
-    if *HasSlot::<R>::slot(&config) != expected {
-        return Err(AuthorityError::SlotChanged);
-    }
-    let bytes = borsh::to_vec(&config).map_err(|_| AuthorityError::ConfigDoesNotDecode)?;
-    let mut response = Response::set_state(bytes);
-    for (target, message) in ctx.outbox {
-        response.sync_messages.push(SyncMessage {
-            to: Actor::new(target, program),
-            message,
-            pda_seeds: BTreeSet::new(),
-        });
+    let config: C =
+        borsh::from_slice(pre).map_err(|_| refuse(AuthorityError::ConfigDoesNotDecode))?;
+    let ctx = Ctx {
+        caller,
+        program,
+        gate,
+    };
+    Rs::gate(&ctx, &config, &message)?;
+    let before = Rs::slots(&config);
+    let response = handler(input, message)?;
+    if let Some(post) = &response.post_state {
+        let post: &[u8] = post;
+        let after: C =
+            borsh::from_slice(post).map_err(|_| refuse(AuthorityError::ConfigDoesNotDecode))?;
+        Rs::unchanged(&after, &before)?;
     }
     Ok(response)
 }
 
-/// A hub message at a target: only from the config account itself, then the target's own
-/// state goes through the target handler.
-fn at_target<T, M>(
-    input: &ReceiveInput,
-    config_actor: Actor,
-    hub: Hub,
-    target_handler: Option<impl FnOnce(&mut T, M)>,
-) -> Result<Response, AuthorityError>
-where
-    T: BorshSerialize + BorshDeserialize + Default,
-    M: Hosts,
-{
-    if input.from != Some(config_actor) {
-        return Err(AuthorityError::NotFromConfig);
-    }
-    let Some(target_handler) = target_handler else {
-        return Err(AuthorityError::NotFromConfig);
-    };
-    let message: M =
-        borsh::from_slice(&hub.inner).map_err(|_| AuthorityError::MessageDoesNotDecode)?;
-    let pre: &[u8] = &input.pre_state;
-    let mut state: T = if pre.is_empty() {
-        T::default()
-    } else {
-        borsh::from_slice(pre).map_err(|_| AuthorityError::TargetDoesNotDecode)?
-    };
-    target_handler(&mut state, message);
-    let bytes = borsh::to_vec(&state).map_err(|_| AuthorityError::TargetDoesNotDecode)?;
-    Ok(Response::set_state(bytes))
-}
-
-/// Hop 1, at the sender's own actor: vouch and forward.
-fn seat<M: Hosts>(
-    input: &ReceiveInput,
-    config_actor: Actor,
-    message: M,
-) -> Result<Response, AuthorityError> {
-    let message = match message.into_forwarded() {
-        Ok(_) => return Err(AuthorityError::ForwardedNotAtConfig),
-        Err(message) => message,
-    };
+/// Hop 1, at the sender's own actor: vouch and forward the message as it arrived.
+fn seat(input: &ReceiveInput, config_actor: Actor) -> Result<Response, AuthorityError> {
     if !input.is_authorized {
         return Err(AuthorityError::MissingSignature);
     }
-    let hop = M::forwarded(Forwarded {
+    let hop = Wire::<()>::Library(LibraryMessage::Forwarded(Forwarded {
         via: input.from.map(|from| from.program_account_id),
-        inner: borsh::to_vec(&message).map_err(|_| AuthorityError::MessageDoesNotDecode)?,
-    });
+        inner: input.message.clone(),
+    }));
     Ok(Response::keep_state().send_sync(config_actor, &hop))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const KEY: AccountId = AccountId::new([1; 32]);
-    const OTHER: AccountId = AccountId::new([2; 32]);
-    const GOVERNANCE: AccountId = AccountId::new([6; 32]);
-
-    fn caller(account: AccountId, via: Option<AccountId>) -> Caller {
-        Caller { account, via }
-    }
-
-    const PROGRAM: AccountId = AccountId::new([0xA0; 32]);
-
-    fn ctx(caller: Option<Caller>) -> Ctx {
-        ctx_with(caller, InitGate::Deployer)
-    }
-
-    fn ctx_with(caller: Option<Caller>, gate: InitGate) -> Ctx {
-        Ctx {
-            caller,
-            role: "holder",
-            program: PROGRAM,
-            gate,
-            expected: None,
-            verified: false,
-            outbox: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn codes_are_stable() {
-        let expected: [(AuthorityError, u16); 21] = [
-            (AuthorityError::NotInitialized, 101),
-            (AuthorityError::Renounced, 102),
-            (AuthorityError::NotHolder, 103),
-            (AuthorityError::MissingSignature, 104),
-            (AuthorityError::SeedProofFailed, 107),
-            (AuthorityError::MessageDoesNotDecode, 108),
-            (AuthorityError::ConfigDoesNotDecode, 109),
-            (AuthorityError::NoNomination, 113),
-            (AuthorityError::NotNominee, 114),
-            (AuthorityError::NotGenesis, 115),
-            (AuthorityError::NotDeployer, 117),
-            (AuthorityError::AlreadyInstalled, 118),
-            (AuthorityError::NotOwnProgram, 119),
-            (AuthorityError::ViaNotAllowed, 120),
-            (AuthorityError::ForwardedNotAtConfig, 121),
-            (AuthorityError::NotThroughSeat, 122),
-            (AuthorityError::SlotChanged, 126),
-            (AuthorityError::NotInstalled, 131),
-            (AuthorityError::NotFromConfig, 123),
-            (AuthorityError::SendNeedsHolder, 132),
-            (AuthorityError::TargetDoesNotDecode, 133),
-        ];
-        for (error, code) in &expected {
-            assert_eq!(error.code(), *code, "{error:?}");
-        }
-        let mut codes: Vec<u16> = AuthorityError::ALL
+/// Whether `response` sends a library message to `actor`.
+fn sends_library_message(response: &Response, actor: Actor) -> bool {
+    let sync = response
+        .sync_messages
+        .iter()
+        .map(|sent| (sent.to, &sent.message));
+    sync.chain(
+        response
+            .async_messages
             .iter()
-            .map(AuthorityError::code)
-            .collect();
-        codes.sort_unstable();
-        codes.dedup();
-        assert_eq!(
-            codes.len(),
-            AuthorityError::ALL.len(),
-            "two refusals share a code"
-        );
-        assert_eq!(
-            AuthorityError::NotHolder.text("admin"),
-            "lez-authority/admin E103: the signing account is not the admin"
-        );
-    }
-
-    #[test]
-    fn a_key_holder_acts_at_top_level_only() {
-        let slot = AuthoritySlot::held(Holder {
-            account: KEY,
-            via: None,
-        });
-        assert_eq!(slot.check(&caller(KEY, None)), Ok(()));
-        assert_eq!(
-            slot.check(&caller(KEY, Some(GOVERNANCE))),
-            Err(AuthorityError::ViaNotAllowed)
-        );
-        assert_eq!(
-            slot.check(&caller(OTHER, None)),
-            Err(AuthorityError::NotHolder)
-        );
-    }
-
-    #[test]
-    fn a_pda_holder_acts_through_its_program_only() {
-        let slot = AuthoritySlot::held(Holder {
-            account: KEY,
-            via: Some(GOVERNANCE),
-        });
-        assert_eq!(slot.check(&caller(KEY, Some(GOVERNANCE))), Ok(()));
-        assert_eq!(
-            slot.check(&caller(KEY, None)),
-            Err(AuthorityError::ViaNotAllowed)
-        );
-        assert_eq!(
-            slot.check(&caller(KEY, Some(OTHER))),
-            Err(AuthorityError::ViaNotAllowed)
-        );
-    }
-
-    #[test]
-    fn unset_and_renounced_slots_refuse_everyone() {
-        assert_eq!(
-            AuthoritySlot::Unset.check(&caller(KEY, None)),
-            Err(AuthorityError::NotInstalled)
-        );
-        assert_eq!(
-            AuthoritySlot::Renounced.check(&caller(KEY, None)),
-            Err(AuthorityError::Renounced)
-        );
-    }
-
-    #[test]
-    fn the_deployer_installs_itself_and_the_slot_must_stay_that_way() {
-        let mut slot = AuthoritySlot::Unset;
-        let mut ctx = ctx(Some(caller(PROGRAM, None)));
-        ctx.install(&mut slot);
-        let held = AuthoritySlot::held(Holder {
-            account: PROGRAM,
-            via: None,
-        });
-        assert_eq!(slot, held);
-        assert_eq!(ctx.expected, Some(held));
-    }
-
-    #[test]
-    #[should_panic(expected = "only the deployer installs the first holder")]
-    fn another_account_cannot_install() {
-        ctx(Some(caller(KEY, None))).install(&mut AuthoritySlot::Unset);
-    }
-
-    #[test]
-    #[should_panic(expected = "only the deployer installs the first holder")]
-    fn the_deployer_reached_through_a_program_cannot_install() {
-        ctx(Some(caller(PROGRAM, Some(GOVERNANCE)))).install(&mut AuthoritySlot::Unset);
-    }
-
-    #[test]
-    fn with_a_genesis_key_only_that_key_installs() {
-        let mut slot = AuthoritySlot::Unset;
-        ctx_with(Some(caller(KEY, None)), InitGate::Genesis(KEY)).install(&mut slot);
-        assert_eq!(
-            slot,
-            AuthoritySlot::held(Holder {
-                account: KEY,
-                via: None
-            })
-        );
-    }
-
-    #[test]
-    #[should_panic(expected = "only the genesis key installs the first holder")]
-    fn with_a_genesis_key_the_deployer_is_refused() {
-        ctx_with(Some(caller(PROGRAM, None)), InitGate::Genesis(KEY))
-            .install(&mut AuthoritySlot::Unset);
-    }
-
-    fn held_by_key_with(nominee: Option<AccountId>) -> AuthoritySlot {
-        AuthoritySlot::Held {
-            holder: Holder {
-                account: KEY,
-                via: None,
-            },
-            nominee,
-        }
-    }
-
-    #[test]
-    fn nominate_records_replaces_and_cancels() {
-        let mut slot = held_by_key_with(None);
-        let mut ctx = ctx(Some(caller(KEY, None)));
-        ctx.nominate(&mut slot, OTHER);
-        assert_eq!(slot.nominee(), Some(OTHER));
-        ctx.nominate(&mut slot, GOVERNANCE);
-        assert_eq!(slot.nominee(), Some(GOVERNANCE));
-        ctx.nominate(&mut slot, AccountId::default());
-        assert_eq!(slot.nominee(), None);
-        assert_eq!(
-            slot.holder(),
-            Some(Holder {
-                account: KEY,
-                via: None
-            })
-        );
-    }
-
-    #[test]
-    #[should_panic(expected = "the signing account is not the holder")]
-    fn only_the_holder_nominates() {
-        let mut slot = held_by_key_with(None);
-        ctx(Some(caller(OTHER, None))).nominate(&mut slot, OTHER);
-    }
-
-    #[test]
-    fn a_key_nominee_accepts_at_top_level() {
-        let mut slot = held_by_key_with(Some(OTHER));
-        ctx(Some(caller(OTHER, None))).accept(&mut slot, None);
-        assert_eq!(
-            slot,
-            AuthoritySlot::held(Holder {
-                account: OTHER,
-                via: None
-            })
-        );
-    }
-
-    #[test]
-    fn a_pda_nominee_accepts_through_its_program_with_the_seed() {
-        let seed = PdaSeed::new([9; 32]);
-        let pda = AccountId::for_public_pda(&GOVERNANCE, &seed);
-        let mut slot = held_by_key_with(Some(pda));
-        ctx(Some(caller(pda, Some(GOVERNANCE)))).accept(&mut slot, Some(seed));
-        assert_eq!(
-            slot,
-            AuthoritySlot::held(Holder {
-                account: pda,
-                via: Some(GOVERNANCE)
-            })
-        );
-    }
-
-    #[test]
-    #[should_panic(expected = "must prove itself with the seed")]
-    fn a_pda_nominee_with_the_wrong_seed_is_refused() {
-        let pda = AccountId::for_public_pda(&GOVERNANCE, &PdaSeed::new([9; 32]));
-        let mut slot = held_by_key_with(Some(pda));
-        ctx(Some(caller(pda, Some(GOVERNANCE)))).accept(&mut slot, Some(PdaSeed::new([8; 32])));
-    }
-
-    #[test]
-    #[should_panic(expected = "must prove itself with the seed")]
-    fn a_nominee_reached_through_a_program_without_a_seed_is_refused() {
-        let mut slot = held_by_key_with(Some(OTHER));
-        ctx(Some(caller(OTHER, Some(GOVERNANCE)))).accept(&mut slot, None);
-    }
-
-    #[test]
-    #[should_panic(expected = "the signing account is not the nominated holder")]
-    fn only_the_nominee_accepts() {
-        let mut slot = held_by_key_with(Some(OTHER));
-        ctx(Some(caller(GOVERNANCE, None))).accept(&mut slot, None);
-    }
-
-    #[test]
-    #[should_panic(expected = "no holder nominee is pending")]
-    fn accept_without_a_nomination_is_refused() {
-        let mut slot = held_by_key_with(None);
-        ctx(Some(caller(OTHER, None))).accept(&mut slot, None);
-    }
-
-    #[test]
-    #[should_panic(expected = "the holder is renounced")]
-    fn accept_after_renounce_is_refused() {
-        let mut slot = held_by_key_with(Some(OTHER));
-        ctx(Some(caller(KEY, None))).renounce(&mut slot);
-        assert_eq!(slot, AuthoritySlot::Renounced);
-        ctx(Some(caller(OTHER, None))).accept(&mut slot, None);
-    }
-
-    #[test]
-    #[should_panic(expected = "the holder is already installed")]
-    fn install_refuses_a_held_slot() {
-        let mut slot = AuthoritySlot::held(Holder {
-            account: KEY,
-            via: None,
-        });
-        ctx(Some(caller(PROGRAM, None))).install(&mut slot);
-    }
-
-    #[test]
-    #[should_panic(expected = "must go through the sender's own actor")]
-    fn require_refuses_a_message_that_skipped_the_seat() {
-        let slot = AuthoritySlot::held(Holder {
-            account: KEY,
-            via: None,
-        });
-        ctx(None).require(&slot);
-    }
+            .map(|sent| (sent.to, &sent.message)),
+    )
+    .any(|(to, message)| to == actor && message.first() == Some(&LIBRARY_TAG))
 }
+
+#[cfg(test)]
+mod tests;

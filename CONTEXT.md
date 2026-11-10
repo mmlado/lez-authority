@@ -1,6 +1,6 @@
 # lez-authority
 
-Authority primitives for LEZ actor programs: a slot per role inside a program's config, the hop that carries a sender's authority from their own actor to the config, and the guard that runs a program's handler behind both. Policy-free: it does not know what an admin is.
+Authority primitives for LEZ actor programs: a slot per role inside a program's config, the hop that carries a sender's authority from their own actor to the config, and the guard in front of a program's plain handler. Policy-free: it does not know what an admin is.
 
 ## Language
 
@@ -9,7 +9,7 @@ The program's one well-known account, a PDA of the program id and the program's 
 _Avoid_: state account, admin account
 
 **Uninitialized**:
-A config account with no state yet. Only the install operation creates the config; the guard refuses every other message there.
+A config account with no state yet. Only the root role's install creates the config. The guard refuses every other message there.
 _Avoid_: empty config, default config
 
 **Seat**:
@@ -37,22 +37,34 @@ One role's place in the config. Unset until a holder is installed, held, or reno
 _Avoid_: authority config, admin config
 
 **Role**:
-What a slot stands for, such as admin. Names the slot in refusals.
+What a slot stands for, such as admin. Names the slot in refusals. A program may have more than one, each with its own slot.
+
+**Root role**:
+The first of a program's roles. Its install creates the config, and the guard's own refusals name it.
+_Avoid_: main role, primary role
+
+**Policy**:
+A role's rules: who may install its first holder, who may nominate, who may renounce, and what renounce leaves. A role that answers to nobody keeps the defaults. A role that answers to another, as a freeze authority answers to the admin, reads that role's slot.
+_Avoid_: permissions, access rules
 
 **Guard**:
-The library function that wraps a program's handler: it forwards at seats, unwraps hops at the config, runs management operations, and refuses a handler that changed a slot by other means than the context.
+What runs in front of a program's handler: it forwards at seats, unwraps hops at the config, runs management operations, checks the holders a message declares, and refuses a handler that changed a slot. The guard attribute puts it there.
 _Avoid_: dispatcher, framework, runtime
 
+**Plain handler**:
+A LEZ program's own handler, taking the receive input and the program's message and returning the response, as it would without the library.
+_Avoid_: callback, hook
+
 **Context**:
-What the guard hands the handler: the caller, if any, and the operations on the slot.
+What a role's policy sees: the caller, if any, and the program's init gate. The handler never sees it.
 _Avoid_: ctx in prose, session
 
-**Hosted variant**:
-A library variant a program places in its own message enum so it travels on the same wire: the management operations and the hop.
-_Avoid_: injected instruction (the v0.2 word)
+**Library message**:
+A message of the library's, not the program's: a role's management operation or the hop. It starts with the byte 255, so it travels next to the program's messages without the program's enum hosting it.
+_Avoid_: hosted variant, injected instruction (the v0.2 word)
 
 **Management operation**:
-A hosted operation the guard runs on a slot without the handler: install, nominate, accept, renounce.
+A library message the guard runs on its role's slot, under the role's policy, without the handler: install, nominate, accept, renounce.
 _Avoid_: admin instruction
 
 **Nomination**:
@@ -68,19 +80,23 @@ What a PDA nominee's accept carries: the seed that, with the program that reache
 _Avoid_: PDA claim
 
 **Open message**:
-A message the handler receives with no caller. Anyone may send it to the config account.
+A program message that needs no holder. It runs wherever it is sent, as in a program without the guard. At the config it needs an initialized config.
 _Avoid_: public message
 
 **Gated message**:
-A message whose handler arm requires the holder through the context. Sent through the sender's seat.
+A program message that declares it needs a role's holder. It travels through the sender's seat, and the guard checks the holder at the config before the handler runs.
 _Avoid_: protected, restricted, admin-only (that is the admin crate's case)
 
+**Config-only message**:
+A program message that only the config account may send, as it does to the program's other actors.
+_Avoid_: internal message, hub message
+
 **Hub**:
-The config account acting for the holder: a gated arm sends to other actors of the program through the context, after the guard verified the holder once.
+The config account acting for the holder: the handler of a gated message sends to other actors of the program, after the guard verified the holder once.
 _Avoid_: dispatcher, relay
 
 **Target**:
-An actor of the program that receives a message from the hub. It accepts the message only from the config account itself, not from any actor of the program.
+An actor of the program that receives a message from the hub. A config-only message runs there only when the config account itself sent it, not any actor of the program.
 _Avoid_: callee, destination
 
 **Refusal**:

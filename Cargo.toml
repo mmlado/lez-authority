@@ -7,6 +7,10 @@ description = "Authority primitives for LEZ actor programs: the holder slot, the
 repository = "https://github.com/mmlado/lez-authority"
 readme = "README.md"
 
+[workspace]
+members = ["macros"]
+
 [dependencies]
 borsh = { version = "1", features = ["derive"] }
 lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone", rev = "7e3f7f765371c4110a1f7f37baf520cd253fb339" }
+lez-authority-macros = { path = "macros" }
