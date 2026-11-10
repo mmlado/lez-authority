@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-10
+
 ### Added
 
 - The `guard` attribute: on a plain LEZ handler, `fn(&ReceiveInput, Message) -> Response` under `lee_core::actor_entrypoint!`, it puts the guard in front and leaves the program's code as it is. `roles(..)`, `config`, `seed`, and `genesis` for a genesis key.
@@ -50,5 +52,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `config_account` and the `seed` const fn.
 - The README with the model, the refusal table and the security properties, `docs/routing.md` with every hop and its checks, and the README's program as `examples/owner.rs`.
 
-[Unreleased]: https://github.com/mmlado/lez-authority/compare/v0.1.0-alpha.1...HEAD
+[Unreleased]: https://github.com/mmlado/lez-authority/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/mmlado/lez-authority/releases/tag/v0.1.0
 [0.1.0-alpha.1]: https://github.com/mmlado/lez-authority/releases/tag/v0.1.0-alpha.1

@@ -1,6 +1,6 @@
 [package]
 name = "lez-authority-macros"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 description = "Macros for lez-authority: the guard attribute on a handler, HasSlot from marked fields, Gated from marked messages"

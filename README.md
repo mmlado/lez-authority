@@ -8,7 +8,7 @@
 
 Authority primitives for LEZ actor programs (LEZ 0.4): a slot per role inside a program's config, the hop that carries a sender's authority from their own actor to the config, and the guard that runs in front of the program's own handler. Policy-free: no notion of admin or freeze lives here. No SPEL dependency.
 
-Status: alpha, `v0.1.0-alpha.1`. The API and the wire formats may still change before 0.1.0. Pinned to logos-execution-zone `dev` at 7e3f7f7 (2026-10-24), the actor model of PR #935. The v0.2.4 line lives in [spel-authority](https://github.com/mmlado/spel-authority) and stays as it is. First consumer: [lez-admin-authority](https://github.com/mmlado/lez-admin-authority), which names the admin role.
+Status: `v0.1.0`. See [Versioning and stability](#versioning-and-stability) for what a release promises. Pinned to logos-execution-zone `dev` at 7e3f7f7 (2026-10-24), the actor model of PR #935. The v0.2.4 line lives in [spel-authority](https://github.com/mmlado/spel-authority) and stays as it is. First consumer: [lez-admin-authority](https://github.com/mmlado/lez-admin-authority), which names the admin role.
 
 See [CONTEXT.md](CONTEXT.md) for the glossary, [docs/routing.md](docs/routing.md) for every hop with its checks, and [docs/adr](docs/adr) for the design decisions.
 
@@ -39,7 +39,7 @@ A holder is an account together with the program it acts through, its `via`: non
 [dependencies]
 borsh = { version = "1", features = ["derive"] }
 lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone", rev = "7e3f7f765371c4110a1f7f37baf520cd253fb339" }
-lez-authority = { git = "https://github.com/mmlado/lez-authority", tag = "v0.1.0-alpha.1" }
+lez-authority = { git = "https://github.com/mmlado/lez-authority", tag = "v0.1.0" }
 ```
 
 A program that only needs an admin depends on [lez-admin-authority](https://github.com/mmlado/lez-admin-authority) instead, which brings this crate in. The `lee_core` source must match the one this crate pins, see [Versioning and stability](#versioning-and-stability).
