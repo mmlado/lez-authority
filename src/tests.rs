@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use lee_core::account::ActorState;
-use lee_core::program::SyncMessage;
+use lee_core::program::{AsyncMessage, SyncMessage};
 
 use super::*;
 
@@ -455,6 +455,7 @@ enum Msg {
     ToElsewhere(AccountId),
     Mark,
     Pass { to: AccountId, bytes: Vec<u8> },
+    PassAsync { to: AccountId, bytes: Vec<u8> },
 }
 
 impl Gated for Msg {
@@ -485,6 +486,14 @@ fn handle(input: &ReceiveInput, message: Msg) -> Response {
         });
         return response;
     }
+    if let Msg::PassAsync { to, bytes } = message {
+        let mut response = Response::keep_state();
+        response.async_messages.push(AsyncMessage {
+            to: Actor::new(to, PROGRAM),
+            message: bytes,
+        });
+        return response;
+    }
     let mut config: Two = if pre.is_empty() {
         Two::default()
     } else {
@@ -496,7 +505,7 @@ fn handle(input: &ReceiveInput, message: Msg) -> Response {
         Msg::ClearSecond => config.second = AuthoritySlot::Unset,
         Msg::ToTarget(target) => send = Some(Actor::new(target, PROGRAM)),
         Msg::ToElsewhere(target) => send = Some(Actor::new(target, ELSEWHERE)),
-        Msg::Mark | Msg::Pass { .. } => unreachable!(),
+        Msg::Mark | Msg::Pass { .. } | Msg::PassAsync { .. } => unreachable!(),
     }
     let response = Response::set_state(borsh::to_vec(&config).unwrap());
     match send {
@@ -789,6 +798,22 @@ fn a_handler_cannot_forge_a_hop() {
         inner: borsh::to_vec(&Wire::<Msg>::op::<First>(Op::Nominate { next: OTHER })).unwrap(),
     }));
     let pass = Msg::Pass {
+        to: config_actor().account_id,
+        bytes: borsh::to_vec(&hop).unwrap(),
+    };
+    assert_eq!(
+        at(seat_of(PROGRAM), None, false, None, pass.into()).err(),
+        Some(Refusal::of::<First>(AuthorityError::LibrarySend))
+    );
+}
+
+#[test]
+fn a_handler_cannot_forge_a_hop_through_an_async_message() {
+    let hop = Wire::<Msg>::Library(LibraryMessage::Forwarded(Forwarded {
+        via: None,
+        inner: borsh::to_vec(&Wire::<Msg>::op::<First>(Op::Nominate { next: OTHER })).unwrap(),
+    }));
+    let pass = Msg::PassAsync {
         to: config_actor().account_id,
         bytes: borsh::to_vec(&hop).unwrap(),
     };
