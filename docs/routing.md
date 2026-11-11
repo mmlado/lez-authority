@@ -168,6 +168,6 @@ Verified on host in both repos. Not yet run on a sequencer: it needs a second pr
 | Actors | every `(account, program)` pair the transaction reaches, root included: the seat, the config, each target |
 | Signers | the sender of an operation or of a message that needs a holder. An open message needs no signer besides the fee payer |
 | Evidence | the config account's PDA evidence on its first write. A target that is a key account the wallet holds was admitted as a non-signing public account |
-| Fee | a fee declaration whose payer signs and has a nonce. The wallet's default `gas_limit` of 2,000,000 cycles covered three hops, see the admin repo's overhead numbers |
+| Fee | a fee declaration whose payer signs and has a nonce. The wallet runs the call first and declares the cycles it measured plus 25 percent, see the admin repo's overhead numbers. It does not send a call that reverts unless the client allows it, and such a call pays its whole gas limit |
 
 The LEZ wallet library builds all of this from account mentions. The admin repo's runner is the reference client.

@@ -12,5 +12,5 @@ members = ["macros"]
 
 [dependencies]
 borsh = { version = "1", features = ["derive"] }
-lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone", rev = "7e3f7f765371c4110a1f7f37baf520cd253fb339" }
+lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone", tag = "v0.4.0-rc3" }
 lez-authority-macros = { path = "macros" }

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `lee_core` is pinned to logos-execution-zone `v0.4.0-rc3`, by tag, in place of `dev` at `7e3f7f7`. A consumer pins the same tag, spelt the same way. The guard, the wire formats and the refusal codes are unchanged.
+- The README and `docs/routing.md` describe the rc3 wallet: it runs a transaction before sending it, does not send one that reverts unless the client allows it, and declares the gas it measured.
+
 ## [0.1.0] - 2026-11-10
 
 ### Added

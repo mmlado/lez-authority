@@ -8,7 +8,7 @@
 
 Authority primitives for LEZ actor programs (LEZ 0.4): a slot per role inside a program's config, the hop that carries a sender's authority from their own actor to the config, and the guard that runs in front of the program's own handler. Policy-free: no notion of admin or freeze lives here. No SPEL dependency.
 
-Status: `v0.1.0`. See [Versioning and stability](#versioning-and-stability) for what a release promises. Pinned to logos-execution-zone `dev` at 7e3f7f7 (2026-10-24), the actor model of PR #935. The v0.2.4 line lives in [spel-authority](https://github.com/mmlado/spel-authority) and stays as it is. First consumer: [lez-admin-authority](https://github.com/mmlado/lez-admin-authority), which names the admin role.
+Status: `v0.1.0`. See [Versioning and stability](#versioning-and-stability) for what a release promises. Pinned to logos-execution-zone `v0.4.0-rc3` (2026-11-11), the actor model of PR #935. The v0.2.4 line lives in [spel-authority](https://github.com/mmlado/spel-authority) and stays as it is. First consumer: [lez-admin-authority](https://github.com/mmlado/lez-admin-authority), which names the admin role.
 
 See [CONTEXT.md](CONTEXT.md) for the glossary, [docs/routing.md](docs/routing.md) for every hop with its checks, and [docs/adr](docs/adr) for the design decisions.
 
@@ -38,7 +38,7 @@ A holder is an account together with the program it acts through, its `via`: non
 ```toml
 [dependencies]
 borsh = { version = "1", features = ["derive"] }
-lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone", rev = "7e3f7f765371c4110a1f7f37baf520cd253fb339" }
+lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone", tag = "v0.4.0-rc3" }
 lez-authority = { git = "https://github.com/mmlado/lez-authority", tag = "v0.1.0" }
 ```
 
@@ -151,7 +151,7 @@ There is no one-step transfer: a PDA cannot co-sign a transaction, and one shape
 
 ## Refusals
 
-A refusal is a panic, which is how a handler fails on LEZ. The text is `lez-authority/<role> E<code>: <sentence>`, and it reaches the sequencer log verbatim. The transaction is included, reverted, and charged. Clients see no error: they read the state back. Codes are append-only, a number is never reused or renumbered, and `codes_are_stable` pins the table.
+A refusal is a panic, which is how a handler fails on LEZ. The text is `lez-authority/<role> E<code>: <sentence>`. The LEZ wallet runs a transaction before it sends it and, by default, does not send one that reverts: the text comes back in its `SimulatedRevert` error. A transaction sent anyway is included, reverted, and charged its whole gas limit, the text reaches the sequencer log verbatim, and the client reads the state back. Codes are append-only, a number is never reused or renumbered, and `codes_are_stable` pins the table.
 
 | Code | Refusal | When |
 | --- | --- | --- |
@@ -211,7 +211,7 @@ A PDA holder's grant comes with the call, so the handler, and every program it c
 
 Semantic versioning covers the public Rust API, the Borsh encodings of `AuthoritySlot`, `Holder`, `Op`, `Forwarded` and `LibraryMessage`, the byte 255 that marks a library message, and the refusal codes with their meaning. The slot lives inside the program's own config, and the library messages travel next to the program's. While the version is 0.x, a minor bump may change any of them, and each such change is called out in the [changelog](CHANGELOG.md).
 
-The `lee_core` dependency pins logos-execution-zone `dev` at commit `7e3f7f765371c4110a1f7f37baf520cd253fb339`. A consumer must pin the same commit, spelt the same way: cargo treats a tag and a rev as different sources even when they point at the same commit, and two copies of `lee_core` do not compile. Every re-pin is a minor release.
+The `lee_core` dependency pins logos-execution-zone at its `v0.4.0-rc3` tag. A consumer must pin the same tag, spelt the same way: cargo treats a tag and a rev as different sources even when they point at the same commit, and two copies of `lee_core` do not compile. Every re-pin is a minor release.
 
 ## Development
 
