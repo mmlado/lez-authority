@@ -1115,7 +1115,7 @@ dependencies = [
 [[package]]
 name = "lee_core"
 version = "0.1.0"
-source = "git+https://github.com/logos-blockchain/logos-execution-zone?rev=7e3f7f765371c4110a1f7f37baf520cd253fb339#7e3f7f765371c4110a1f7f37baf520cd253fb339"
+source = "git+https://github.com/logos-blockchain/logos-execution-zone?tag=v0.4.0-rc3#bafd07be0701398f9bc435f73ab05e9a7936c301"
 dependencies = [
  "base58",
  "borsh",
@@ -1130,7 +1130,7 @@ dependencies = [
 
 [[package]]
 name = "lez-authority"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "borsh",
  "lee_core",
@@ -1139,7 +1139,7 @@ dependencies = [
 
 [[package]]
 name = "lez-authority-macros"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
