@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-11
+
 ### Changed
 
 - `lee_core` is pinned to logos-execution-zone `v0.4.0-rc3`, by tag, in place of `dev` at `7e3f7f7`. A consumer pins the same tag, spelt the same way. The guard, the wire formats and the refusal codes are unchanged.
@@ -57,6 +59,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `config_account` and the `seed` const fn.
 - The README with the model, the refusal table and the security properties, `docs/routing.md` with every hop and its checks, and the README's program as `examples/owner.rs`.
 
-[Unreleased]: https://github.com/mmlado/lez-authority/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/mmlado/lez-authority/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/mmlado/lez-authority/releases/tag/v0.2.0
 [0.1.0]: https://github.com/mmlado/lez-authority/releases/tag/v0.1.0
 [0.1.0-alpha.1]: https://github.com/mmlado/lez-authority/releases/tag/v0.1.0-alpha.1
