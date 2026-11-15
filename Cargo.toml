@@ -8,7 +8,12 @@ repository = "https://github.com/mmlado/lez-authority"
 readme = "README.md"
 
 [workspace]
-members = ["macros"]
+members = [
+    "macros",
+    "fixtures/lez-sample-authority",
+    "fixtures/by-name",
+    "fixtures/renamed",
+]
 
 [dependencies]
 borsh = { version = "1", features = ["derive"] }

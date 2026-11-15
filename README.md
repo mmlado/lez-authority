@@ -112,6 +112,8 @@ A role is a type with `Role`, which names it in refusals and in a client's opera
 
 A program names its roles in the attribute: `roles(A)` for one, `roles(A, B)` for two. The first is the root. Its `Init` creates the config, and the guard's own refusals name it. A second role that answers to the first overrides the rules that differ and reads the first role's slot through the config, the way a freeze authority answers to the admin. A message may need either role's holder, or both ([ADR-0003](docs/adr/0003-roles-compose-through-traits.md)).
 
+A role crate, one that defines roles for programs to use, is named `lez-<role>-authority` and has `pub use lez_authority;` at its root. The macros find this crate through it, so a program may depend on the role crate alone.
+
 ## The macros
 
 | Macro | On | Writes |
@@ -120,7 +122,7 @@ A program names its roles in the attribute: `roles(A)` for one, `roles(A, B)` fo
 | `#[derive(HasSlot)]`, `#[slot(R)]` | the config, its slot field | `HasSlot<R>` |
 | `#[derive(Gated)]`, `#[only(R)]`, `#[from_config]` | the message enum, its variants | `Gated` |
 
-`#[only]` takes one role. A misplaced marker is a compile error with the reason, such as `a message is either #[only(..)], sent through the sender's seat, or #[from_config], sent by the config`. [`tests/macros.rs`](tests/macros.rs) holds the derives against hand-written impls, and a handler under the attribute against its hand expansion, input by input, refusals included. The macros find this crate through a role crate that re-exports it, so a program that depends on lez-admin-authority alone can use them.
+`#[only]` takes one role. A misplaced marker is a compile error with the reason, such as `a message is either #[only(..)], sent through the sender's seat, or #[from_config], sent by the config`. [`tests/macros.rs`](tests/macros.rs) holds the derives against hand-written impls, and a handler under the attribute against its hand expansion, input by input, refusals included. The macros find this crate through a direct dependency on it, or on a role crate (see [Roles](#roles)). They take one that every build links: required dependencies first, then those for a target, then optional ones, then dev-dependencies, and this crate ahead of a role crate. A program whose dependencies do not fit the rule depends on this crate directly, at the tag its role crate pins, and the macros take it first. A new role crate needs no change here.
 
 ## The slot
 
@@ -212,7 +214,7 @@ A PDA holder's grant comes with the call, so the handler, and every program it c
 
 ## Versioning and stability
 
-Semantic versioning covers the public Rust API, the Borsh encodings of `AuthoritySlot`, `Holder`, `Op`, `Forwarded` and `LibraryMessage`, the byte 255 that marks a library message, and the refusal codes with their meaning. The slot lives inside the program's own config, and the library messages travel next to the program's. While the version is 0.x, a minor bump may change any of them, and each such change is called out in the [changelog](CHANGELOG.md).
+Semantic versioning covers the public Rust API, the Borsh encodings of `AuthoritySlot`, `Holder`, `Op`, `Forwarded` and `LibraryMessage`, the byte 255 that marks a library message, the refusal codes with their meaning, and the naming rule by which the macros find this crate through a role crate. The slot lives inside the program's own config, and the library messages travel next to the program's. While the version is 0.x, a minor bump may change any of them, and each such change is called out in the [changelog](CHANGELOG.md).
 
 The `lee_core` dependency pins logos-execution-zone at its `v0.4.0-rc3` tag. A consumer must pin the same tag, spelt the same way: cargo treats a tag and a rev as different sources even when they point at the same commit, and two copies of `lee_core` do not compile. Every re-pin is a minor release.
 

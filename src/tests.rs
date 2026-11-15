@@ -760,6 +760,22 @@ fn a_nomination_does_not_revive_a_renounced_slot() {
 }
 
 #[test]
+fn a_renounce_drops_a_pending_nominee() {
+    let nominate = Wire::op::<Second>(Op::Nominate { next: OTHER });
+    let pending = send(KEY, Some(&two(Some(KEY))), nominate).unwrap();
+    let config = send(PROGRAM, Some(&pending), Wire::op::<Second>(Op::Renounce)).unwrap();
+    assert_eq!(config, two(None));
+    assert_eq!(
+        send(
+            OTHER,
+            Some(&config),
+            Wire::op::<Second>(Op::Accept { pda_seed: None })
+        ),
+        Err(Refusal::of::<Second>(AuthorityError::NoNomination))
+    );
+}
+
+#[test]
 fn a_renounce_withdraws_a_standing_offer() {
     let offer = Wire::op::<Second>(Op::Nominate { next: KEY });
     let offered = send(PROGRAM, Some(&two(None)), offer).unwrap();

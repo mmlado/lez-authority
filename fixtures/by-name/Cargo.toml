@@ -1,0 +1,12 @@
+[package]
+name = "program-by-name"
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "A program that depends on a role crate alone, under the role crate's own name"
+
+[dependencies]
+borsh = { version = "1", features = ["derive"] }
+lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone", tag = "v0.4.0-rc3" }
+lez-sample-authority = { path = "../lez-sample-authority" }
