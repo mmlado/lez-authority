@@ -83,15 +83,35 @@ pub fn derive_gated(input: TokenStream) -> TokenStream {
 
 /// The path to lez-authority from the program's crate.
 fn krate() -> syn::Result<TokenStream2> {
-    use proc_macro_crate::{FoundCrate, crate_name};
-    let fallback = || Ok(quote!(::lez_authority));
+    // A build script links its build-dependencies, which the lookup does not read.
+    if std::env::var("CARGO_CRATE_NAME").as_deref() == Ok("build_script_build") {
+        return Ok(quote!(::lez_authority));
+    }
     let Some((manifest, program, workspace)) = read_manifests() else {
-        return fallback();
+        return Ok(quote!(::lez_authority));
     };
-    let Some(candidates) = candidates(&program, workspace.as_deref()) else {
-        return fallback();
+    let Some(found) = candidates(&program, workspace.as_deref()) else {
+        return Ok(quote!(::lez_authority));
     };
-    if candidates.is_empty() {
+    path_to_engine(&found, &manifest)
+}
+
+/// What the lookup found among the program's dependencies.
+struct Found {
+    /// Each candidate's package and the key the program names it by, in the order the macros
+    /// try them.
+    candidates: Vec<(String, String)>,
+    /// Whether an inherited dependency is missing from the workspace root the lookup read.
+    unresolved: bool,
+}
+
+/// The path for the first candidate, or the rule's error when the manifest holds none.
+fn path_to_engine(found: &Found, manifest: &std::path::Path) -> syn::Result<TokenStream2> {
+    let Some((package, key)) = found.candidates.first() else {
+        // The root the lookup read may not be cargo's, and a renamed role crate may hide there.
+        if found.unresolved {
+            return Ok(quote!(::lez_authority));
+        }
         return Err(Error::new(
             Span::call_site(),
             format!(
@@ -99,20 +119,13 @@ fn krate() -> syn::Result<TokenStream2> {
                 manifest.display()
             ),
         ));
-    }
-    let found = candidates.iter().find_map(|name| match crate_name(name) {
-        Ok(FoundCrate::Itself) => Some(quote!(::lez_authority)),
-        Ok(FoundCrate::Name(imported)) => {
-            let imported = format_ident!("{imported}");
-            Some(if name == "lez-authority" {
-                quote!(::#imported)
-            } else {
-                quote!(::#imported::lez_authority)
-            })
-        }
-        _ => None,
-    });
-    found.map_or_else(fallback, Ok)
+    };
+    let name = format_ident!("{}", key.replace('-', "_"));
+    Ok(if package == "lez-authority" {
+        quote!(::#name)
+    } else {
+        quote!(::#name::lez_authority)
+    })
 }
 
 /// The program's manifest path and text, and its workspace root's text if it has one.
@@ -131,7 +144,7 @@ fn read_manifests() -> Option<(std::path::PathBuf, String, Option<String>)> {
 /// The program's dependencies that may lead to lez-authority, in the order the macros try them:
 /// lez-authority itself, or a role crate, which is named `lez-<role>-authority` and re-exports
 /// lez-authority at its root. `None` when the manifest does not parse.
-fn candidates(program: &str, workspace: Option<&str>) -> Option<Vec<String>> {
+fn candidates(program: &str, workspace: Option<&str>) -> Option<Found> {
     use toml_edit::{DocumentMut, Item, TableLike};
     let program = program.parse::<DocumentMut>().ok()?;
     let package = program
@@ -140,7 +153,10 @@ fn candidates(program: &str, workspace: Option<&str>) -> Option<Vec<String>> {
         .and_then(Item::as_str);
     // Inside lez-authority itself, whose tests and examples do not list it as a dependency.
     if package == Some("lez-authority") {
-        return Some(vec!["lez-authority".to_owned()]);
+        return Some(Found {
+            candidates: vec![("lez-authority".to_owned(), "lez-authority".to_owned())],
+            unresolved: false,
+        });
     }
     let workspace = workspace.and_then(|text| text.parse::<DocumentMut>().ok());
     let inherited = workspace
@@ -156,21 +172,22 @@ fn candidates(program: &str, workspace: Option<&str>) -> Option<Vec<String>> {
                 .filter_map(|(_, target)| Some((target.as_table_like()?, true))),
         );
     }
-    let mut found: Vec<(u8, bool, String)> = Vec::new();
+    let mut found: Vec<(u8, bool, String, String)> = Vec::new();
+    let mut unresolved = false;
     for (owner, in_target) in owners {
         for kind in ["dependencies", "dev-dependencies"] {
             let Some(table) = owner.get(kind).and_then(Item::as_table_like) else {
                 continue;
             };
             for (key, dependency) in table.iter() {
-                // A renamed workspace dependency names its package only in the root manifest.
-                let declared = match inherited {
-                    Some(root)
-                        if dependency.get("workspace").and_then(Item::as_bool) == Some(true) =>
-                    {
-                        root.get(key).unwrap_or(dependency)
-                    }
-                    _ => dependency,
+                let declared = if dependency.get("workspace").and_then(Item::as_bool) == Some(true)
+                {
+                    // A renamed workspace dependency names its package only in the root manifest.
+                    let root_entry = inherited.and_then(|root| root.get(key));
+                    unresolved |= root_entry.is_none();
+                    root_entry.unwrap_or(dependency)
+                } else {
+                    dependency
                 };
                 let name = declared
                     .get("package")
@@ -187,18 +204,25 @@ fn candidates(program: &str, workspace: Option<&str>) -> Option<Vec<String>> {
                     (_, _, true) => 1,
                     _ => 0,
                 };
-                found.push((tier, name != "lez-authority", name.to_owned()));
+                found.push((
+                    tier,
+                    name != "lez-authority",
+                    name.to_owned(),
+                    key.to_owned(),
+                ));
             }
         }
     }
     found.sort();
     let mut seen = std::collections::BTreeSet::new();
-    Some(
-        found
-            .into_iter()
-            .filter_map(|(_, _, name)| seen.insert(name.clone()).then_some(name))
-            .collect(),
-    )
+    let candidates = found
+        .into_iter()
+        .filter_map(|(_, _, package, key)| seen.insert(package.clone()).then_some((package, key)))
+        .collect();
+    Some(Found {
+        candidates,
+        unresolved,
+    })
 }
 
 /// Whether a crate is named as a role crate is, `lez-<role>-authority`.
@@ -523,6 +547,21 @@ mod tests {
         }
     }
 
+    /// The candidates as `package`, or `package as key` for a renamed one.
+    fn listed(found: &Found) -> Vec<String> {
+        found
+            .candidates
+            .iter()
+            .map(|(package, key)| {
+                if package == key {
+                    package.clone()
+                } else {
+                    format!("{package} as {key}")
+                }
+            })
+            .collect()
+    }
+
     #[test]
     fn the_candidates_come_in_the_order_the_build_links_them() {
         let program = r#"
@@ -540,7 +579,7 @@ mod tests {
             lez-authority = "0.3"
             lez-admin-authority = "0.3"
 
-            [target.'cfg(unix)'.dependencies.lez-pause-authority]
+            [target.'cfg(unix)'.dependencies.lez-access-authority]
             version = "0.1"
 
             [target.'cfg(unix)'.dev-dependencies]
@@ -556,44 +595,87 @@ mod tests {
             [workspace.dependencies]
             adm = { package = "lez-admin-authority", path = "../admin" }
         "#;
+        let found = candidates(program, Some(workspace)).unwrap();
         assert_eq!(
-            candidates(program, Some(workspace)).unwrap(),
+            listed(&found),
             [
-                "lez-admin-authority",
+                "lez-admin-authority as adm",
                 "lez-freeze-authority",
-                "lez-kanon-authority",
-                "lez-pause-authority",
+                "lez-kanon-authority as kanon",
+                "lez-access-authority",
                 "lez-maybe-authority",
                 "lez-authority",
                 "lez-test-authority",
             ]
         );
+        assert!(!found.unresolved);
     }
 
     #[test]
     fn an_inherited_dependency_is_named_by_the_workspace_root() {
         let program = "[dependencies]\nadm.workspace = true\n";
         let workspace = "[workspace.dependencies]\nadm = { package = \"lez-admin-authority\", path = \"../admin\" }\n";
-        assert_eq!(
-            candidates(program, Some(workspace)).unwrap(),
-            ["lez-admin-authority"]
-        );
-        assert!(candidates(program, None).unwrap().is_empty());
+        let found = candidates(program, Some(workspace)).unwrap();
+        assert_eq!(listed(&found), ["lez-admin-authority as adm"]);
+        let rootless = candidates(program, None).unwrap();
+        assert!(rootless.candidates.is_empty() && rootless.unresolved);
         assert!(candidates("not toml [", None).is_none());
     }
 
     #[test]
     fn inside_the_engine_the_engine_is_the_only_candidate() {
         let engine = "[package]\nname = \"lez-authority\"\n[dependencies]\nlez-authority-macros = { path = \"macros\" }\n";
-        assert_eq!(candidates(engine, None).unwrap(), ["lez-authority"]);
+        assert_eq!(
+            listed(&candidates(engine, None).unwrap()),
+            ["lez-authority"]
+        );
     }
 
     #[test]
     fn the_engine_comes_first_within_its_tier() {
         let program = "[dependencies]\nlez-admin-authority = \"0.3\"\nlez-authority = \"0.3\"\n";
         assert_eq!(
-            candidates(program, None).unwrap(),
+            listed(&candidates(program, None).unwrap()),
             ["lez-authority", "lez-admin-authority"]
+        );
+    }
+
+    #[test]
+    fn the_first_candidate_gives_the_path_and_none_gives_the_rule() {
+        let path = |candidates: &[(&str, &str)], unresolved| {
+            let found = Found {
+                candidates: candidates
+                    .iter()
+                    .map(|(package, key)| (package.to_string(), key.to_string()))
+                    .collect(),
+                unresolved,
+            };
+            path_to_engine(&found, std::path::Path::new("/program/Cargo.toml"))
+                .map(|path| path.to_string())
+                .map_err(|error| error.to_string())
+        };
+        assert_eq!(
+            path(
+                &[
+                    ("lez-admin-authority", "adm"),
+                    ("lez-authority", "lez-authority")
+                ],
+                false
+            ),
+            Ok(":: adm :: lez_authority".to_owned())
+        );
+        assert_eq!(
+            path(&[("lez-freeze-authority", "lez-freeze-authority")], false),
+            Ok(":: lez_freeze_authority :: lez_authority".to_owned())
+        );
+        assert_eq!(
+            path(&[("lez-authority", "engine")], false),
+            Ok(":: engine".to_owned())
+        );
+        assert_eq!(path(&[], true), Ok(":: lez_authority".to_owned()));
+        assert_eq!(
+            path(&[], false),
+            Err("lez-authority's macros found no dependency named lez-authority or lez-<role>-authority in /program/Cargo.toml".to_owned())
         );
     }
 

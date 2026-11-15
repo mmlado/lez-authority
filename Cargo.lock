@@ -1141,7 +1141,6 @@ dependencies = [
 name = "lez-authority-macros"
 version = "0.2.0"
 dependencies = [
- "proc-macro-crate",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -1402,6 +1401,15 @@ dependencies = [
 
 [[package]]
 name = "program-by-name"
+version = "0.0.0"
+dependencies = [
+ "borsh",
+ "lee_core",
+ "lez-sample-authority",
+]
+
+[[package]]
+name = "program-inherited"
 version = "0.0.0"
 dependencies = [
  "borsh",
