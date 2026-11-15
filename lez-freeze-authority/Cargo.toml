@@ -8,4 +8,6 @@ repository = "https://github.com/mmlado/lez-freeze-authority"
 readme = "../README.md"
 
 [dependencies]
+borsh.workspace = true
+lee_core.workspace = true
 lez-admin-authority.workspace = true
