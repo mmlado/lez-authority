@@ -1,0 +1,7 @@
+# A freeze operation that changes nothing is refused
+
+Each freeze operation is refused when the state it asks for is already in place: freezing a frozen program or a frozen account, and releasing a program or an account that is not frozen. Every success then changes something, and a release sent to a mistyped account id is refused instead of leaving the intended account frozen without a word. OpenZeppelin's Pausable and SPL Token's freeze and thaw refuse the same cases. v0.2 refused two of them, each for a reason 0.4 does not have. Its gate refused a second freeze of the program, and on 0.4 a freeze never refuses a freeze operation. It refused to release an account that was not frozen, so that a release never wrote to a marker account nobody had claimed, and on 0.4 the frozen accounts are a set in the config. The price is a failed transaction, fee included, for a retry or a second responder who finds the state already in place, and the refusal tells them so. Freezing the all-zero id, which means no account across the library, is refused for the same reason. It would refuse nobody, so an unset id in a client is caught, and a missing caller written as that id could never match a frozen entry.
+
+## Considered options
+
+- **Accepting them, changing nothing,** as v0.2 accepted releasing a program that was not frozen and freezing a frozen account. A retry, a second responder or a multisig that executes late gets a success, and the role needs no codes for them. A mistyped release succeeds as well.

@@ -1,0 +1,8 @@
+# The freeze's codes keep v0.2's numbers where the meaning carries over
+
+A refusal prints the crate, the role, the code and the sentence, and a code never changes meaning. Most of v0.2's freeze refusals become the engine's own codes, named for the freeze authority, such as E103, the signing account is not the freeze authority. The refusals only the freeze role has live in a block of the freeze crate's own and print with its prefix, as in `lez-freeze-authority/freeze E217: the program is frozen`. They keep v0.2's numbers where the meaning carries over, as the engine kept the numbers of v0.2's admin: E208 for a sender who is neither the freeze authority nor the admin, E211 to E214 for an operation that would change nothing, E217 for a frozen program and E218 for a frozen account. The other numbers up to E224 stay retired. New freeze codes start at E225, for freezing the all-zero id, and E226, for a freeze beyond the cap on frozen accounts. The engine gains room for a role's own codes, and two codes of its own: E136 for a request for clearance from outside the program, and E137 for an Init of a role that takes its holder only by nomination.
+
+## Considered options
+
+- **Fresh numbers from E201.** A table without gaps, where E201 to E207 would mean other things than they meant in v0.2.
+- **Every code in the engine's block.** The engine would need no room for a role's own codes, but it would carry the freeze's sentences, and each future role would add codes to it.
