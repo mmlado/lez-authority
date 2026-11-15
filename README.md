@@ -108,7 +108,7 @@ At the config every program message needs an initialized config, and the guard r
 
 ## Roles
 
-A role is a type with `Role`, which names it in refusals and in a client's operation message and gives the type of its slot, and `Policy<C>`, which says who may install, nominate and renounce, and what renounce leaves. The defaults are the rules of a role that answers to nobody, so such a role implements `Policy` empty, as `Owner` does above. `HasSlot<R>` puts the role's slot in the config. A role that keeps only its holder takes `AuthoritySlot` as its slot. One that keeps more, as a freeze authority keeps what it froze, takes a type of its own that implements `Slot`, which hands the guard the `AuthoritySlot` inside it.
+A role is a type with `Role`, which names it in refusals and in a client's operation message and gives the type of its slot, and `Policy<C>`, which says who may install, nominate and renounce, and what renounce leaves. `Role::PROSE_NAME` names the role in a refusal's sentence where its name alone does not read well, as "freeze authority" does for `freeze`. `Policy::BY_NOMINATION_ONLY` marks a role whose holder is only ever appointed by nomination: its `Init` is refused with E137, and the guard attribute refuses a first role with it where `cargo check` sees it, at its `roles(..)`. A guard called by hand is refused at `cargo build`. The defaults are the rules of a role that answers to nobody, so such a role implements `Policy` empty, as `Owner` does above. `HasSlot<R>` puts the role's slot in the config. A role that keeps only its holder takes `AuthoritySlot` as its slot. One that keeps more, as a freeze authority keeps what it froze, takes a type of its own that implements `Slot`, which hands the guard the `AuthoritySlot` inside it.
 
 A program names its roles in the attribute: `roles(A)` for one, `roles(A, B)` for two. The first is the root. Its `Init` creates the config, and the guard's own refusals name it. A second role that answers to the first overrides the rules that differ and reads the first role's slot through the config, the way a freeze authority answers to the admin. A message may need either role's holder, or both ([ADR-0003](docs/adr/0003-roles-compose-through-traits.md)).
 
@@ -153,7 +153,7 @@ There is no one-step transfer: a PDA cannot co-sign a transaction, and one shape
 
 ## Refusals
 
-A refusal is a panic, which is how a handler fails on LEZ. The text is `lez-authority/<role> E<code>: <sentence>`. The LEZ wallet runs a transaction before it sends it and, by default, does not send one that reverts: the text comes back in its `SimulatedRevert` error. A transaction sent anyway is included, reverted, and charged its whole gas limit, the text reaches the sequencer log verbatim, and the client reads the state back. Codes are append-only, a number is never reused or renumbered, and `codes_are_stable` pins the table.
+A refusal is a panic, which is how a handler fails on LEZ. The text is `lez-authority/<role> E<code>: <sentence>`, with the role's name in the prefix and its prose name in the sentence, as in `lez-authority/freeze E103: the signing account is not the freeze authority`. A role crate's own refusals print with that crate's prefix, as in `lez-freeze-authority/freeze E217: the program is frozen`. The LEZ wallet runs a transaction before it sends it and, by default, does not send one that reverts: the text comes back in its `SimulatedRevert` error. A transaction sent anyway is included, reverted, and charged its whole gas limit, the text reaches the sequencer log verbatim, and the client reads the state back. Codes are append-only, a number is never reused or renumbered, and `codes_are_stable` pins the table.
 
 | Code | Refusal | When |
 | --- | --- | --- |
@@ -177,6 +177,7 @@ A refusal is a panic, which is how a handler fails on LEZ. The text is `lez-auth
 | 126 | `SlotChanged` | the handler's write changed a slot |
 | 131 | `NotInstalled` | the slot holds nobody |
 | 135 | `LibrarySend` | the handler's response sent a library message to the config account |
+| 137 | `ByNominationOnly` | `Init` of a role whose holder is only ever appointed by nomination |
 
 Numbers up to 116 follow the v0.2 `AdminError` table where a refusal has the same meaning there. The gaps are v0.2 codes with no counterpart here, 132 and 133, retired with the handler context of `v0.1.0-alpha.1`, and 134, dropped before it was released.
 

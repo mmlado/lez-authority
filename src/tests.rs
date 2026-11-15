@@ -70,7 +70,7 @@ fn run(
 
 #[test]
 fn codes_are_stable() {
-    let expected: [(AuthorityError, u16); 20] = [
+    let expected: [(AuthorityError, u16); 21] = [
         (AuthorityError::NotInitialized, 101),
         (AuthorityError::Renounced, 102),
         (AuthorityError::NotHolder, 103),
@@ -91,6 +91,7 @@ fn codes_are_stable() {
         (AuthorityError::SlotChanged, 126),
         (AuthorityError::NotInstalled, 131),
         (AuthorityError::LibrarySend, 135),
+        (AuthorityError::ByNominationOnly, 137),
     ];
     for (error, code) in &expected {
         assert_eq!(error.code(), *code, "{error:?}");
@@ -107,7 +108,7 @@ fn codes_are_stable() {
         "two refusals share a code"
     );
     assert_eq!(
-        AuthorityError::NotHolder.text("admin"),
+        AuthorityError::NotHolder.text("admin", "admin"),
         "lez-authority/admin E103: the signing account is not the admin"
     );
     assert_eq!(
@@ -446,6 +447,7 @@ struct First;
 
 impl Role for First {
     const NAME: &'static str = "first";
+    const PROSE_NAME: &'static str = "first role";
     type Slot = AuthoritySlot;
 }
 
@@ -1149,5 +1151,175 @@ fn a_handler_that_replaces_the_first_role_s_holder_is_refused_by_its_name() {
     assert_eq!(
         at_config_with::<(First, Marking), _>(&pre, 7, replace_first),
         Some(Refusal::of::<First>(AuthorityError::SlotChanged))
+    );
+}
+
+// A role whose holder is only ever appointed by nomination, named in prose as the freeze
+// authority is.
+
+struct Deputy;
+
+impl Role for Deputy {
+    const NAME: &'static str = "deputy";
+    const PROSE_NAME: &'static str = "deputy authority";
+    type Slot = AuthoritySlot;
+}
+
+impl<C: HasSlot<Deputy>> Policy<C> for Deputy {
+    const BY_NOMINATION_ONLY: bool = true;
+}
+
+#[derive(Debug, Default, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+struct FirstAndDeputy {
+    first: AuthoritySlot,
+    deputy: AuthoritySlot,
+}
+
+impl HasSlot<First> for FirstAndDeputy {
+    fn slot(&self) -> &AuthoritySlot {
+        &self.first
+    }
+    fn slot_mut(&mut self) -> &mut AuthoritySlot {
+        &mut self.first
+    }
+}
+
+impl HasSlot<Deputy> for FirstAndDeputy {
+    fn slot(&self) -> &AuthoritySlot {
+        &self.deputy
+    }
+    fn slot_mut(&mut self) -> &mut AuthoritySlot {
+        &mut self.deputy
+    }
+}
+
+#[test]
+fn a_refusal_names_the_role_by_name_in_its_prefix_and_in_prose_in_its_sentence() {
+    assert_eq!(
+        Refusal::of::<Deputy>(AuthorityError::NotHolder).text(),
+        "lez-authority/deputy E103: the signing account is not the deputy authority"
+    );
+    assert_eq!(
+        Refusal::of::<Deputy>(AuthorityError::ByNominationOnly).text(),
+        "lez-authority/deputy E137: the deputy authority is appointed by nomination, never installed"
+    );
+}
+
+#[test]
+fn a_role_s_own_refusal_prints_with_its_crate_s_prefix() {
+    let own = AuthorityError::Role {
+        krate: "lez-deputy-authority",
+        code: 208,
+        sentence: "the sender is neither the deputy authority nor the first",
+    };
+    assert_eq!(own.code(), 208);
+    assert_eq!(
+        Refusal::of::<Deputy>(own).text(),
+        "lez-deputy-authority/deputy E208: the sender is neither the deputy authority nor the first"
+    );
+}
+
+#[test]
+fn a_role_appointed_only_by_nomination_refuses_every_init() {
+    for deputy in [
+        AuthoritySlot::Unset,
+        AuthoritySlot::Offered { nominee: KEY },
+        held(OTHER),
+        AuthoritySlot::Renounced,
+    ] {
+        for who in [
+            caller(PROGRAM, None),
+            caller(KEY, None),
+            caller(PROGRAM, Some(ELSEWHERE)),
+        ] {
+            let ctx = Ctx {
+                caller: Some(who),
+                program: PROGRAM,
+                gate: InitGate::Deployer,
+            };
+            let before = || FirstAndDeputy {
+                first: held(PROGRAM),
+                deputy: deputy.clone(),
+            };
+            let mut config = before();
+            assert_eq!(
+                run_op::<Deputy, FirstAndDeputy>(&ctx, &mut config, Op::Init),
+                Err(Refusal::of::<Deputy>(AuthorityError::ByNominationOnly))
+            );
+            assert_eq!(config, before());
+        }
+    }
+}
+
+fn keep(_input: &ReceiveInput, _message: SetMark) -> Response {
+    Response::keep_state()
+}
+
+#[test]
+fn a_role_appointed_only_by_nomination_may_be_the_second_role() {
+    let pre = FirstAndDeputy {
+        first: held(PROGRAM),
+        deputy: AuthoritySlot::Unset,
+    };
+    assert_eq!(at_config_with::<(First, Deputy), _>(&pre, 0, keep), None);
+}
+
+#[test]
+fn a_one_role_guard_names_its_root_in_prose() {
+    let op = Wire::<SetMark>::op::<First>(Op::Renounce);
+    let input = ReceiveInput {
+        receiver: config_actor(),
+        from: None,
+        is_authorized: false,
+        pre_state: ActorState::from(Vec::new()),
+        message: borsh::to_vec(&op).unwrap(),
+    };
+    let refused =
+        try_guard::<(First,), RootAndMark, SetMark>(&input, &SEED, InitGate::Deployer, op, keep)
+            .err()
+            .unwrap();
+    assert_eq!(
+        refused,
+        Refusal::of::<First>(AuthorityError::NotThroughSeat)
+    );
+    assert_eq!(
+        refused.text(),
+        "lez-authority/first E122: a message that needs the first role must go through the sender's own actor"
+    );
+}
+
+#[test]
+fn an_operation_of_the_second_role_sent_straight_to_the_config_names_that_role() {
+    let op = Wire::<SetMark>::op::<Deputy>(Op::Nominate { next: KEY });
+    let input = ReceiveInput {
+        receiver: config_actor(),
+        from: None,
+        is_authorized: false,
+        pre_state: ActorState::from(borsh::to_vec(&FirstAndDeputy::default()).unwrap()),
+        message: borsh::to_vec(&op).unwrap(),
+    };
+    let refused = try_guard::<(First, Deputy), FirstAndDeputy, SetMark>(
+        &input,
+        &SEED,
+        InitGate::Deployer,
+        op,
+        keep,
+    )
+    .err();
+    assert_eq!(
+        refused,
+        Some(Refusal::of::<Deputy>(AuthorityError::NotThroughSeat))
+    );
+}
+
+#[test]
+fn a_slot_change_names_the_slot_by_the_role_s_name() {
+    assert_eq!(
+        Refusal::of::<Deputy>(AuthorityError::SlotChanged).text(),
+        "lez-authority/deputy E126: a handler must not change the deputy slot"
+    );
+    assert_eq!(
+        Refusal::of::<Deputy>(AuthorityError::NotInstalled).text(),
+        "lez-authority/deputy E131: there is no deputy authority"
     );
 }

@@ -192,12 +192,21 @@ fn guard_handler(
     let mut inner = handler.clone();
     inner.attrs.clear();
     inner.vis = syn::Visibility::Inherited;
+    // cargo check skips the guard's post-monomorphization assert, so check the roles here too.
+    let at_roles = Span::call_site().located_at(roles[0].span());
+    let root_check = quote_spanned! {at_roles=>
+        const _: () = ::core::assert!(
+            !<(#(#roles,)*) as #krate::Roles<#config, #message_type>>::ROOT_BY_NOMINATION_ONLY,
+            "the first role creates the config with its Init, so its holder cannot be appointed only by nomination"
+        );
+    };
     Ok(quote! {
         #(#attributes)*
         #visibility fn #name(
             __lez_input: #input_type,
             __lez_message: #krate::Wire<#message_type>,
         ) #output {
+            #root_check
             #inner
             #krate::guard::<(#(#roles,)*), #config, #message_type>(
                 __lez_input,
@@ -444,6 +453,26 @@ mod tests {
                 "enum Message { #[only(Admin)] #[only(Freeze)] Set(u64) }"
             ),
             one_role
+        );
+    }
+
+    #[test]
+    fn the_guard_checks_its_first_role_in_a_const_cargo_check_evaluates() {
+        let expanded: String = guard_handler(
+            "roles(Admin, Freeze), config = Config, seed = SEED"
+                .parse()
+                .unwrap(),
+            HANDLER.parse().unwrap(),
+            &quote!(::lez_authority),
+        )
+        .unwrap()
+        .to_string()
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+        assert!(
+            expanded.contains("const_:()=::core::assert!(!<(Admin,Freeze,)as::lez_authority::Roles<Config,Message>>::ROOT_BY_NOMINATION_ONLY"),
+            "{expanded}"
         );
     }
 

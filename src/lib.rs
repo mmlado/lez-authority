@@ -42,8 +42,9 @@ use lee_core::program::{PdaSeed, ReceiveInput, Response};
 
 /// Why a message was refused. It becomes a panic, which is how a handler fails on LEZ, with
 /// a stable code in front of the sentence: `lez-authority/<role> E103: the signing account
-/// is not the <role>`. A code never changes meaning. New refusals take new codes, retired
-/// ones keep theirs.
+/// is not the <role>`, the sentence naming the role by its prose name. A role crate's own
+/// refusals print with that crate's prefix. A code never changes meaning. New refusals take
+/// new codes, retired ones keep theirs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuthorityError {
     /// The config account holds no state yet, and the message is not the root role's install.
@@ -86,11 +87,22 @@ pub enum AuthorityError {
     NotFromConfig,
     /// A handler sent a library message to the config account.
     LibrarySend,
+    /// Init came for a role whose holder is only ever appointed by nomination.
+    ByNominationOnly,
+    /// A refusal of a role's own, printed with its crate's prefix.
+    Role {
+        /// The role crate's name, the prefix of the text.
+        krate: &'static str,
+        /// The code, which the role crate keeps stable.
+        code: u16,
+        /// The sentence.
+        sentence: &'static str,
+    },
 }
 
 impl AuthorityError {
-    /// Every refusal, for the table test.
-    pub const ALL: [Self; 20] = [
+    /// Every refusal of the engine's own, for the table test.
+    pub const ALL: [Self; 21] = [
         Self::NotInitialized,
         Self::ConfigDoesNotDecode,
         Self::MessageDoesNotDecode,
@@ -111,6 +123,7 @@ impl AuthorityError {
         Self::SlotChanged,
         Self::NotFromConfig,
         Self::LibrarySend,
+        Self::ByNominationOnly,
     ];
 
     /// The stable code. Append-only: a number is never reused or renumbered.
@@ -137,22 +150,30 @@ impl AuthorityError {
             Self::SlotChanged => 126,
             Self::NotInstalled => 131,
             Self::LibrarySend => 135,
+            Self::ByNominationOnly => 137,
+            Self::Role { code, .. } => *code,
         }
     }
 
-    /// The panic text: the crate, the role, the code, the sentence.
+    /// The panic text: the crate, the role's name, the code, and the sentence, which names the
+    /// role by its prose name.
     #[must_use]
-    pub fn text(&self, role: &str) -> String {
+    pub fn text(&self, role: &str, prose: &str) -> String {
+        let krate = match self {
+            Self::Role { krate, .. } => *krate,
+            _ => "lez-authority",
+        };
         format!(
-            "lez-authority/{role} E{}: {}",
+            "{krate}/{role} E{}: {}",
             self.code(),
-            self.describe(role)
+            self.describe(role, prose)
         )
     }
 
-    /// The sentence, naming the role.
+    /// The sentence. It names the holder by the role's prose name, and the slot by the
+    /// role's name.
     #[must_use]
-    pub fn describe(&self, role: &str) -> String {
+    pub fn describe(&self, role: &str, prose: &str) -> String {
         match self {
             Self::NotInitialized => "the config account is not initialized".into(),
             Self::ConfigDoesNotDecode => "the config account does not decode".into(),
@@ -165,31 +186,35 @@ impl AuthorityError {
                 "forwarded messages are only handled at the config account".into()
             }
             Self::NotThroughSeat => {
-                format!("a message that needs the {role} must go through the sender's own actor")
+                format!("a message that needs the {prose} must go through the sender's own actor")
             }
-            Self::NotInstalled => format!("no {role} is installed"),
-            Self::AlreadyInstalled => format!("the {role} is already installed"),
+            Self::NotInstalled => format!("there is no {prose}"),
+            Self::AlreadyInstalled => format!("the {prose} is already installed"),
             Self::NotDeployer => format!(
-                "only the deployer installs the first {role}: the program's own account, through its seat at top level"
+                "only the deployer installs the first {prose}: the program's own account, through its seat at top level"
             ),
             Self::NotGenesis => {
-                format!("only the genesis key installs the first {role}, through its seat at top level")
+                format!("only the genesis key installs the first {prose}, through its seat at top level")
             }
-            Self::NoNomination => format!("no {role} nominee is pending"),
-            Self::NotNominee => format!("the signing account is not the nominated {role}"),
+            Self::NoNomination => format!("no {prose} nominee is pending"),
+            Self::NotNominee => format!("the signing account is not the nominated {prose}"),
             Self::SeedProofFailed => {
                 "a nominee reached through a program must prove itself with the seed that derives it under that program".into()
             }
-            Self::Renounced => format!("the {role} is renounced"),
-            Self::NotHolder => format!("the signing account is not the {role}"),
+            Self::Renounced => format!("the {prose} is renounced"),
+            Self::NotHolder => format!("the signing account is not the {prose}"),
             Self::ViaNotAllowed => {
-                format!("the {role} acts at top level, or through the program that made it the {role}")
+                format!("the {prose} acts at top level, or through the program that made it the {prose}")
             }
             Self::SlotChanged => format!("a handler must not change the {role} slot"),
             Self::NotFromConfig => "this message comes only from the config account".into(),
             Self::LibrarySend => {
                 "a handler must not send a library message to the config account".into()
             }
+            Self::ByNominationOnly => {
+                format!("the {prose} is appointed by nomination, never installed")
+            }
+            Self::Role { sentence, .. } => (*sentence).into(),
         }
     }
 }
@@ -198,8 +223,10 @@ impl AuthorityError {
 /// panics with its [`text`](Self::text).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Refusal {
-    /// The role named in the text.
+    /// The role's name, in the text's prefix.
     pub role: &'static str,
+    /// The role's prose name, in the text's sentence.
+    pub prose: &'static str,
     /// What was refused.
     pub error: AuthorityError,
 }
@@ -210,6 +237,7 @@ impl Refusal {
     pub fn of<R: Role>(error: AuthorityError) -> Self {
         Self {
             role: R::NAME,
+            prose: R::PROSE_NAME,
             error,
         }
     }
@@ -217,7 +245,7 @@ impl Refusal {
     /// The panic text.
     #[must_use]
     pub fn text(&self) -> String {
-        self.error.text(self.role)
+        self.error.text(self.role, self.prose)
     }
 }
 
@@ -351,8 +379,12 @@ impl Slot for AuthoritySlot {
 
 /// A role a slot plays, such as admin. Names the slot in panic text.
 pub trait Role: 'static {
-    /// The role's name, as it appears in panic text and in a client's operation message.
+    /// The role's name, as it appears in a refusal's prefix and in a client's operation
+    /// message.
     const NAME: &'static str;
+    /// The role's name in a refusal's sentence, such as "freeze authority" for the role named
+    /// "freeze". By default its name.
+    const PROSE_NAME: &'static str = Self::NAME;
     /// The type of the role's slot in the config, [`AuthoritySlot`] for a role that keeps
     /// only its holder.
     type Slot: Slot;
@@ -375,6 +407,107 @@ pub trait Policy<C>: Role + Sized
 where
     C: HasSlot<Self>,
 {
+    /// Whether the role's holder is only ever appointed by nomination. Its `Init` is then
+    /// refused (E137), and it cannot be a program's first role, whose `Init` creates the
+    /// config. The guard attribute refuses a first role with it where `cargo check` sees it,
+    /// at its `roles(..)`. A guard called by hand is refused at `cargo build`.
+    ///
+    /// ```compile_fail,E0080
+    /// use borsh::{BorshDeserialize, BorshSerialize};
+    /// use lee_core::program::{ReceiveInput, Response};
+    /// use lez_authority::{AuthoritySlot, Gated, HasSlot, InitGate, Policy, Role, Wire};
+    ///
+    /// struct Deputy;
+    ///
+    /// impl Role for Deputy {
+    ///     const NAME: &'static str = "deputy";
+    ///     type Slot = AuthoritySlot;
+    /// }
+    ///
+    /// impl<C: HasSlot<Deputy>> Policy<C> for Deputy {
+    ///     const BY_NOMINATION_ONLY: bool = true;
+    /// }
+    ///
+    /// #[derive(Default, BorshSerialize, BorshDeserialize, HasSlot)]
+    /// struct Config {
+    ///     #[slot(Deputy)]
+    ///     deputy: AuthoritySlot,
+    /// }
+    ///
+    /// #[derive(BorshSerialize, BorshDeserialize, Gated)]
+    /// enum Message {
+    ///     Ping,
+    /// }
+    ///
+    /// fn handle(input: &ReceiveInput, message: Wire<Message>) -> Response {
+    ///     let seed = lez_authority::seed(b"deputy-first");
+    ///     lez_authority::guard::<(Deputy,), Config, Message>(
+    ///         input,
+    ///         &seed,
+    ///         InitGate::Deployer,
+    ///         message,
+    ///         |_, _| Response::keep_state(),
+    ///     )
+    /// }
+    ///
+    /// let _reified: fn(&ReceiveInput, Wire<Message>) -> Response = handle;
+    /// ```
+    ///
+    /// The same holds for a list of two roles, the case of a freeze authority put first:
+    ///
+    /// ```compile_fail,E0080
+    /// use borsh::{BorshDeserialize, BorshSerialize};
+    /// use lee_core::program::{ReceiveInput, Response};
+    /// use lez_authority::{AuthoritySlot, Gated, HasSlot, InitGate, Policy, Refusal, Role, Wire};
+    ///
+    /// struct Deputy;
+    ///
+    /// impl Role for Deputy {
+    ///     const NAME: &'static str = "deputy";
+    ///     type Slot = AuthoritySlot;
+    /// }
+    ///
+    /// impl<C: HasSlot<Deputy>> Policy<C> for Deputy {
+    ///     const BY_NOMINATION_ONLY: bool = true;
+    /// }
+    ///
+    /// struct Chief;
+    ///
+    /// impl Role for Chief {
+    ///     const NAME: &'static str = "chief";
+    ///     type Slot = AuthoritySlot;
+    /// }
+    ///
+    /// impl<C: HasSlot<Chief>> Policy<C> for Chief {}
+    ///
+    /// #[derive(Default, BorshSerialize, BorshDeserialize, HasSlot)]
+    /// struct Config {
+    ///     #[slot(Deputy)]
+    ///     deputy: AuthoritySlot,
+    ///     #[slot(Chief)]
+    ///     chief: AuthoritySlot,
+    /// }
+    ///
+    /// #[derive(BorshSerialize, BorshDeserialize, Gated)]
+    /// enum Message {
+    ///     Ping,
+    /// }
+    ///
+    /// fn handle(input: &ReceiveInput, message: Wire<Message>) -> Result<Response, Refusal> {
+    ///     let seed = lez_authority::seed(b"deputy-first");
+    ///     lez_authority::try_guard::<(Deputy, Chief), Config, Message>(
+    ///         input,
+    ///         &seed,
+    ///         InitGate::Deployer,
+    ///         message,
+    ///         |_, _| Response::keep_state(),
+    ///     )
+    /// }
+    ///
+    /// let _reified: fn(&ReceiveInput, Wire<Message>) -> Result<Response, Refusal> = handle;
+    /// ```
+    const BY_NOMINATION_ONLY: bool = false;
+
     /// Who may install the first holder of a slot that has none. By default whoever passes the
     /// program's init gate, at top level.
     ///
@@ -592,6 +725,9 @@ where
     let refuse = Refusal::of::<R>;
     match op {
         Op::Init => {
+            if R::BY_NOMINATION_ONLY {
+                return Err(refuse(AuthorityError::ByNominationOnly));
+            }
             R::may_install(ctx, config)?;
             let caller = *ctx.vouched::<R>()?;
             let slot = HasSlot::<R>::slot_mut(config).authority_slot_mut();
@@ -695,9 +831,19 @@ mod sealed {
 pub trait Roles<C, M>: sealed::Sealed {
     /// The root role's name.
     const ROOT: &'static str;
+    /// The root role's prose name.
+    #[doc(hidden)]
+    const ROOT_PROSE: &'static str;
+    /// Whether the root role's holder is only ever appointed by nomination, which the guard
+    /// refuses at compile time.
+    #[doc(hidden)]
+    const ROOT_BY_NOMINATION_ONLY: bool;
     /// The place in the tuple of the role with this name.
     #[doc(hidden)]
     fn index(name: &str) -> Option<usize>;
+    /// The name and the prose name of the role at `role`.
+    #[doc(hidden)]
+    fn names(role: usize) -> (&'static str, &'static str);
     /// Runs an operation of the role at `role`.
     #[doc(hidden)]
     fn run_op(ctx: &Ctx, config: &mut C, role: usize, op: Op) -> Result<(), Refusal>;
@@ -719,9 +865,15 @@ where
     M: Gated,
 {
     const ROOT: &'static str = A::NAME;
+    const ROOT_PROSE: &'static str = A::PROSE_NAME;
+    const ROOT_BY_NOMINATION_ONLY: bool = A::BY_NOMINATION_ONLY;
 
     fn index(name: &str) -> Option<usize> {
         (name == A::NAME).then_some(0)
+    }
+
+    fn names(_role: usize) -> (&'static str, &'static str) {
+        (A::NAME, A::PROSE_NAME)
     }
 
     fn run_op(ctx: &Ctx, config: &mut C, _role: usize, op: Op) -> Result<(), Refusal> {
@@ -749,12 +901,22 @@ where
     M: Gated,
 {
     const ROOT: &'static str = A::NAME;
+    const ROOT_PROSE: &'static str = A::PROSE_NAME;
+    const ROOT_BY_NOMINATION_ONLY: bool = A::BY_NOMINATION_ONLY;
 
     fn index(name: &str) -> Option<usize> {
         if name == A::NAME {
             Some(0)
         } else {
             (name == B::NAME).then_some(1)
+        }
+    }
+
+    fn names(role: usize) -> (&'static str, &'static str) {
+        if role == 0 {
+            (A::NAME, A::PROSE_NAME)
+        } else {
+            (B::NAME, B::PROSE_NAME)
         }
     }
 
@@ -859,8 +1021,15 @@ where
     C: BorshSerialize + BorshDeserialize + Default,
     M: Gated + BorshDeserialize,
 {
+    const {
+        assert!(
+            !Rs::ROOT_BY_NOMINATION_ONLY,
+            "the first role creates the config with its Init, so its holder cannot be appointed only by nomination"
+        );
+    }
     let refuse = |error| Refusal {
         role: Rs::ROOT,
+        prose: Rs::ROOT_PROSE,
         error,
     };
     let program = input.receiver.program_account_id;
@@ -891,7 +1060,9 @@ where
             }
             at_the_config::<Rs, C, M>(input, program, gate, None, message, handler)
         }
-        Wire::Library(LibraryMessage::Op { .. }) => {
+        Wire::Library(LibraryMessage::Op { role, .. }) => {
+            let (role, prose) = Rs::index(&role).map_or((Rs::ROOT, Rs::ROOT_PROSE), Rs::names);
+            let refuse = |error| Refusal { role, prose, error };
             if at_config {
                 return Err(refuse(AuthorityError::NotThroughSeat));
             }
@@ -948,6 +1119,7 @@ where
 {
     let refuse = |error| Refusal {
         role: Rs::ROOT,
+        prose: Rs::ROOT_PROSE,
         error,
     };
     let pre: &[u8] = &input.pre_state;
@@ -985,6 +1157,7 @@ where
 {
     let refuse = |error| Refusal {
         role: Rs::ROOT,
+        prose: Rs::ROOT_PROSE,
         error,
     };
     let pre: &[u8] = &input.pre_state;
