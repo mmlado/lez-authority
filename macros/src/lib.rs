@@ -4,8 +4,8 @@
 //! program could write by hand.
 
 use proc_macro::TokenStream;
-use proc_macro2::TokenStream as TokenStream2;
-use quote::{format_ident, quote};
+use proc_macro2::{Span, TokenStream as TokenStream2};
+use quote::{format_ident, quote, quote_spanned};
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::{Data, DeriveInput, Error, Expr, FnArg, ItemFn, Meta, Path, Token, Type};
@@ -37,7 +37,8 @@ pub fn guard(args: TokenStream, item: TokenStream) -> TokenStream {
         .into()
 }
 
-/// Implements `HasSlot<R>` for every field marked `#[slot(R)]`.
+/// Implements `HasSlot<R>` for every field marked `#[slot(R)]`. The field holds the role's
+/// slot type, `R::Slot`, which is `AuthoritySlot` for a role that keeps only its holder.
 ///
 /// ```ignore
 /// #[derive(Default, BorshSerialize, BorshDeserialize, HasSlot)]
@@ -239,13 +240,17 @@ fn has_slot(input: &DeriveInput, krate: &TokenStream2) -> syn::Result<TokenStrea
                     quote!(#index)
                 }
             };
+            // Call-site hygiene so `self` resolves in macro_rules! configs, errors on the type.
+            let ty = Span::call_site().located_at(field.ty.span());
+            let slot = quote_spanned!(ty=> &self.#member);
+            let slot_mut = quote_spanned!(ty=> &mut self.#member);
             impls.push(quote! {
                 impl #impl_generics #krate::HasSlot<#role> for #name #type_generics #where_clause {
-                    fn slot(&self) -> &#krate::AuthoritySlot {
-                        &self.#member
+                    fn slot(&self) -> &<#role as #krate::Role>::Slot {
+                        #slot
                     }
-                    fn slot_mut(&mut self) -> &mut #krate::AuthoritySlot {
-                        &mut self.#member
+                    fn slot_mut(&mut self) -> &mut <#role as #krate::Role>::Slot {
+                        #slot_mut
                     }
                 }
             });

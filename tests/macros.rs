@@ -9,13 +9,14 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use lee_core::account::{AccountId, Actor, ActorState};
 use lee_core::program::{PdaSeed, ReceiveInput, Response};
 use lez_authority::{
-    AuthoritySlot, Gated, HasSlot, Holder, InitGate, Op, Policy, Role, Wire, config_account,
+    AuthoritySlot, Gated, HasSlot, Holder, InitGate, Op, Policy, Role, Slot, Wire, config_account,
 };
 
 struct First;
 
 impl Role for First {
     const NAME: &'static str = "first";
+    type Slot = AuthoritySlot;
 }
 
 impl<C: HasSlot<First>> Policy<C> for First {}
@@ -24,9 +25,41 @@ struct Second;
 
 impl Role for Second {
     const NAME: &'static str = "second";
+    type Slot = AuthoritySlot;
 }
 
 impl<C: HasSlot<Second>> Policy<C> for Second {}
+
+/// A role that keeps more than its holder, as a freeze authority keeps what it froze.
+struct Third;
+
+impl Role for Third {
+    const NAME: &'static str = "third";
+    type Slot = Tagged;
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Tagged {
+    authority_slot: AuthoritySlot,
+    tag: u8,
+}
+
+impl Slot for Tagged {
+    fn authority_slot(&self) -> &AuthoritySlot {
+        &self.authority_slot
+    }
+    fn authority_slot_mut(&mut self) -> &mut AuthoritySlot {
+        &mut self.authority_slot
+    }
+}
+
+#[derive(Default, HasSlot)]
+struct Mixed {
+    #[slot(First)]
+    first: AuthoritySlot,
+    #[slot(Third)]
+    third: Tagged,
+}
 
 const PROGRAM: AccountId = AccountId::new([0xA0; 32]);
 const KEY: AccountId = AccountId::new([1; 32]);
@@ -124,6 +157,57 @@ fn each_marked_field_is_its_role_s_slot() {
 
     let pair = Pair(7, holder(1));
     assert_eq!(HasSlot::<First>::slot(&pair), &holder(1));
+}
+
+#[test]
+fn a_marked_field_may_hold_a_role_s_own_slot_type() {
+    let mut config = Mixed::default();
+    HasSlot::<Third>::slot_mut(&mut config).tag = 3;
+    assert_eq!(HasSlot::<Third>::slot(&config).tag, 3);
+    assert_eq!(
+        HasSlot::<Third>::slot(&config).authority_slot(),
+        &AuthoritySlot::Unset
+    );
+    assert_eq!(HasSlot::<First>::slot(&config), &AuthoritySlot::Unset);
+}
+
+// Configs a macro_rules! writes, which the derive's spans must not break.
+macro_rules! declare {
+    ($slot:ident) => {
+        #[derive(Default, HasSlot)]
+        struct Declared {
+            #[slot(First)]
+            first: $slot,
+        }
+    };
+}
+
+declare!(AuthoritySlot);
+
+macro_rules! with_slot {
+    ($item:item) => {
+        #[derive(Default, HasSlot)]
+        $item
+    };
+}
+
+with_slot! {
+    struct Wrapped {
+        #[slot(First)]
+        first: AuthoritySlot,
+    }
+}
+
+#[test]
+fn a_config_a_macro_writes_derives_its_slot() {
+    assert_eq!(
+        HasSlot::<First>::slot(&Declared::default()),
+        &AuthoritySlot::Unset
+    );
+    assert_eq!(
+        HasSlot::<First>::slot(&Wrapped::default()),
+        &AuthoritySlot::Unset
+    );
 }
 
 /// The program's own code, shared by both handlers below.

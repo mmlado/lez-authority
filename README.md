@@ -58,6 +58,7 @@ pub struct Owner;
 
 impl Role for Owner {
     const NAME: &'static str = "owner";
+    type Slot = AuthoritySlot;
 }
 
 /// The owner answers to nobody, so the default rules hold.
@@ -107,7 +108,7 @@ At the config every program message needs an initialized config, and the guard r
 
 ## Roles
 
-A role is a type with `Role`, which names it in refusals and in a client's operation message, and `Policy<C>`, which says who may install, nominate and renounce, and what renounce leaves. The defaults are the rules of a role that answers to nobody, so such a role implements `Policy` empty, as `Owner` does above. `HasSlot<R>` puts the role's slot in the config.
+A role is a type with `Role`, which names it in refusals and in a client's operation message and gives the type of its slot, and `Policy<C>`, which says who may install, nominate and renounce, and what renounce leaves. The defaults are the rules of a role that answers to nobody, so such a role implements `Policy` empty, as `Owner` does above. `HasSlot<R>` puts the role's slot in the config. A role that keeps only its holder takes `AuthoritySlot` as its slot. One that keeps more, as a freeze authority keeps what it froze, takes a type of its own that implements `Slot`, which hands the guard the `AuthoritySlot` inside it.
 
 A program names its roles in the attribute: `roles(A)` for one, `roles(A, B)` for two. The first is the root. Its `Init` creates the config, and the guard's own refusals name it. A second role that answers to the first overrides the rules that differ and reads the first role's slot through the config, the way a freeze authority answers to the admin. A message may need either role's holder, or both ([ADR-0003](docs/adr/0003-roles-compose-through-traits.md)).
 
@@ -143,7 +144,7 @@ pub struct Holder {
 | `Init` | the deployer, or the genesis key, at top level | installs the sender as holder of an unset slot. The root role's `Init` creates the config |
 | `Nominate { next }` | the holder | records the standing offer, the all-zero id cancels it |
 | `Accept { pda_seed }` | the nominee, through its own seat | takes the role, a PDA proves itself with the seed that derives it under the program that reached its seat |
-| `Renounce` | the holder | empties the slot, offer included, by default for good |
+| `Renounce` | the holder | resets the holder part, offer included, by default for good. Whatever else the role keeps in its slot stays |
 
 There is no one-step transfer: a PDA cannot co-sign a transaction, and one shape serves keys and PDAs alike.
 
@@ -192,7 +193,7 @@ Numbers up to 116 follow the v0.2 `AdminError` table where a refusal has the sam
 | `Init` refuses a held or renounced slot | re-initialization (E118, E102) |
 | A `#[from_config]` message runs only when the config account itself sent it, by exact actor | another actor of the program, or a client, posing as the config (E123) |
 | Only a seat sends the config a library message, wherever the handler runs | an open message at a holder's actor, sent unsigned, whose handler passes a client's bytes on as a hop the config would take for the holder's (E135) |
-| Every slot is compared around the handler | a handler replacing a holder (E126) |
+| Every slot is compared around the handler | a handler replacing a holder, or changing what a role keeps in its slot (E126) |
 | The seed proof on a PDA accept, and `via` on the holder | a program that inherited a grant accepting on a PDA's behalf (E107), or acting for it later (E120) |
 | Whole-transaction revert | a program whose seeded call fails at the config also loses its own state change |
 

@@ -1,8 +1,9 @@
 //! Authority primitives for LEZ actor programs.
 //!
 //! A program keeps its config on one well-known account, the config actor, a PDA of the
-//! program id and a seed. Inside that config sits an [`AuthoritySlot`] per role. A message
-//! that needs a holder goes to the sender's own actor under the program first, the seat.
+//! program id and a seed. Inside that config sits a slot per role, with the role's holder in
+//! an [`AuthoritySlot`]. A message that needs a holder goes to the sender's own actor under
+//! the program first, the seat.
 //! The seat checks `is_authorized` and forwards the message to the config, naming the program
 //! that reached it. The config trusts the forward because only this program's own actors
 //! reach it with `from_own_program()`, and every one of them runs the same code: [`guard()`].
@@ -252,8 +253,8 @@ impl Caller {
     }
 }
 
-/// One role's slot: nobody yet, a holder with at most one pending nominee, or renounced
-/// for good.
+/// The holder part of a role's slot, and the whole slot of a role that keeps only its holder:
+/// nobody yet, a holder with at most one pending nominee, or renounced for good.
 #[derive(BorshSerialize, BorshDeserialize, Clone, Debug, Default, PartialEq, Eq)]
 pub enum AuthoritySlot {
     /// No holder yet. The state of a config nobody initialized.
@@ -319,19 +320,43 @@ impl AuthoritySlot {
     }
 }
 
+/// What a role keeps in its slot: the holder part, which the guard's operations and checks
+/// work on, and whatever else the role keeps there, such as the accounts a freeze authority
+/// froze. A role that keeps only its holder takes [`AuthoritySlot`] itself. The guard
+/// refuses a handler that changed any part of a slot.
+pub trait Slot: PartialEq {
+    /// The holder part.
+    fn authority_slot(&self) -> &AuthoritySlot;
+    /// The holder part, to change it.
+    fn authority_slot_mut(&mut self) -> &mut AuthoritySlot;
+}
+
+impl Slot for AuthoritySlot {
+    fn authority_slot(&self) -> &AuthoritySlot {
+        self
+    }
+
+    fn authority_slot_mut(&mut self) -> &mut AuthoritySlot {
+        self
+    }
+}
+
 /// A role a slot plays, such as admin. Names the slot in panic text.
 pub trait Role: 'static {
     /// The role's name, as it appears in panic text and in a client's operation message.
     const NAME: &'static str;
+    /// The type of the role's slot in the config, [`AuthoritySlot`] for a role that keeps
+    /// only its holder.
+    type Slot: Slot;
 }
 
 /// Where role `R`'s slot lives inside a config. The guard runs the management operations
 /// on it and refuses a handler that changed it.
 pub trait HasSlot<R: Role> {
     /// The slot.
-    fn slot(&self) -> &AuthoritySlot;
+    fn slot(&self) -> &R::Slot;
     /// The slot, to change it.
-    fn slot_mut(&mut self) -> &mut AuthoritySlot;
+    fn slot_mut(&mut self) -> &mut R::Slot;
 }
 
 /// Who may install, nominate and renounce role `Self` in a config `C`. Every method holds
@@ -356,7 +381,7 @@ where
     /// # Errors
     /// The refusal that stops the nomination.
     fn may_nominate(ctx: &Ctx, config: &C) -> Result<(), Refusal> {
-        ctx.check::<Self>(HasSlot::<Self>::slot(config))
+        ctx.check::<Self>(HasSlot::<Self>::slot(config).authority_slot())
     }
 
     /// Who may renounce. By default the holder.
@@ -364,10 +389,10 @@ where
     /// # Errors
     /// The refusal that stops the renounce.
     fn may_renounce(ctx: &Ctx, config: &C) -> Result<(), Refusal> {
-        ctx.check::<Self>(HasSlot::<Self>::slot(config))
+        ctx.check::<Self>(HasSlot::<Self>::slot(config).authority_slot())
     }
 
-    /// What renounce leaves in the slot. By default renounced, for good.
+    /// What renounce leaves in the slot's holder part. By default renounced, for good.
     #[must_use]
     fn renounced() -> AuthoritySlot {
         AuthoritySlot::Renounced
@@ -402,8 +427,8 @@ pub enum Op {
         /// The seed that derives the nominee under the program that reached its seat.
         pda_seed: Option<PdaSeed>,
     },
-    /// Gives the role up, nominee included. By default the sender must be the holder, and
-    /// the slot stays empty for good.
+    /// Gives the role up, nominee included. By default the sender must be the holder, and the
+    /// holder part stays renounced for good. Whatever else the role keeps in its slot stays.
     Renounce,
 }
 
@@ -560,7 +585,7 @@ where
         Op::Init => {
             R::may_install(ctx, config)?;
             let caller = *ctx.vouched::<R>()?;
-            let slot = HasSlot::<R>::slot_mut(config);
+            let slot = HasSlot::<R>::slot_mut(config).authority_slot_mut();
             match slot {
                 AuthoritySlot::Unset => {}
                 AuthoritySlot::Held { .. } => return Err(refuse(AuthorityError::AlreadyInstalled)),
@@ -573,7 +598,7 @@ where
         }
         Op::Nominate { next } => {
             R::may_nominate(ctx, config)?;
-            match HasSlot::<R>::slot_mut(config) {
+            match HasSlot::<R>::slot_mut(config).authority_slot_mut() {
                 AuthoritySlot::Held { nominee, .. } => {
                     *nominee = (next != AccountId::default()).then_some(next);
                 }
@@ -583,7 +608,7 @@ where
         }
         Op::Accept { pda_seed } => {
             let caller = *ctx.vouched::<R>()?;
-            let slot = HasSlot::<R>::slot_mut(config);
+            let slot = HasSlot::<R>::slot_mut(config).authority_slot_mut();
             let pending = match slot {
                 AuthoritySlot::Unset => return Err(refuse(AuthorityError::NotInstalled)),
                 AuthoritySlot::Renounced => return Err(refuse(AuthorityError::Renounced)),
@@ -608,7 +633,7 @@ where
         }
         Op::Renounce => {
             R::may_renounce(ctx, config)?;
-            *HasSlot::<R>::slot_mut(config) = R::renounced();
+            *HasSlot::<R>::slot_mut(config).authority_slot_mut() = R::renounced();
         }
     }
     Ok(())
@@ -622,18 +647,18 @@ where
     M: Gated,
 {
     if message.needs::<R>() {
-        ctx.check::<R>(HasSlot::<R>::slot(config))?;
+        ctx.check::<R>(HasSlot::<R>::slot(config).authority_slot())?;
     }
     Ok(())
 }
 
 /// The handler must leave every slot as it found it.
-fn unchanged<R, C>(config: &C, before: &AuthoritySlot) -> Result<(), Refusal>
+fn unchanged<R, C>(after: &C, before: &C) -> Result<(), Refusal>
 where
     R: Role,
     C: HasSlot<R>,
 {
-    if HasSlot::<R>::slot(config) == before {
+    if HasSlot::<R>::slot(after) == HasSlot::<R>::slot(before) {
         Ok(())
     } else {
         Err(Refusal::of::<R>(AuthorityError::SlotChanged))
@@ -664,12 +689,9 @@ pub trait Roles<C, M>: sealed::Sealed {
     /// Checks the holders the message declares it needs.
     #[doc(hidden)]
     fn gate(ctx: &Ctx, config: &C, message: &M) -> Result<(), Refusal>;
-    /// Every role's slot, in order.
+    /// Refuses a slot in `after` that differs from the same slot in `before`.
     #[doc(hidden)]
-    fn slots(config: &C) -> Vec<AuthoritySlot>;
-    /// Refuses a slot that differs from `before`.
-    #[doc(hidden)]
-    fn unchanged(config: &C, before: &[AuthoritySlot]) -> Result<(), Refusal>;
+    fn unchanged(after: &C, before: &C) -> Result<(), Refusal>;
 }
 
 impl<C, M, A> Roles<C, M> for (A,)
@@ -696,12 +718,8 @@ where
         gate::<A, C, M>(ctx, config, message)
     }
 
-    fn slots(config: &C) -> Vec<AuthoritySlot> {
-        vec![HasSlot::<A>::slot(config).clone()]
-    }
-
-    fn unchanged(config: &C, before: &[AuthoritySlot]) -> Result<(), Refusal> {
-        unchanged::<A, C>(config, &before[0])
+    fn unchanged(after: &C, before: &C) -> Result<(), Refusal> {
+        unchanged::<A, C>(after, before)
     }
 }
 
@@ -739,16 +757,9 @@ where
         gate::<B, C, M>(ctx, config, message)
     }
 
-    fn slots(config: &C) -> Vec<AuthoritySlot> {
-        vec![
-            HasSlot::<A>::slot(config).clone(),
-            HasSlot::<B>::slot(config).clone(),
-        ]
-    }
-
-    fn unchanged(config: &C, before: &[AuthoritySlot]) -> Result<(), Refusal> {
-        unchanged::<A, C>(config, &before[0])?;
-        unchanged::<B, C>(config, &before[1])
+    fn unchanged(after: &C, before: &C) -> Result<(), Refusal> {
+        unchanged::<A, C>(after, before)?;
+        unchanged::<B, C>(after, before)
     }
 }
 
@@ -970,13 +981,12 @@ where
         gate,
     };
     Rs::gate(&ctx, &config, &message)?;
-    let before = Rs::slots(&config);
     let response = handler(input, message)?;
     if let Some(post) = &response.post_state {
         let post: &[u8] = post;
         let after: C =
             borsh::from_slice(post).map_err(|_| refuse(AuthorityError::ConfigDoesNotDecode))?;
-        Rs::unchanged(&after, &before)?;
+        Rs::unchanged(&after, &config)?;
     }
     Ok(response)
 }

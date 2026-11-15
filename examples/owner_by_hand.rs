@@ -12,6 +12,7 @@ pub struct Owner;
 
 impl Role for Owner {
     const NAME: &'static str = "owner";
+    type Slot = AuthoritySlot;
 }
 
 /// The owner answers to nobody, so the default rules hold.

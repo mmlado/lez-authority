@@ -24,6 +24,7 @@ struct Hold;
 
 impl Role for Hold {
     const NAME: &'static str = "holder";
+    type Slot = AuthoritySlot;
 }
 
 impl<C: HasSlot<Hold>> Policy<C> for Hold {}
@@ -389,6 +390,7 @@ struct First;
 
 impl Role for First {
     const NAME: &'static str = "first";
+    type Slot = AuthoritySlot;
 }
 
 impl<C: HasSlot<First>> Policy<C> for First {}
@@ -397,6 +399,7 @@ struct Second;
 
 impl Role for Second {
     const NAME: &'static str = "second";
+    type Slot = AuthoritySlot;
 }
 
 impl<C: HasSlot<First> + HasSlot<Second>> Policy<C> for Second {
@@ -419,6 +422,7 @@ struct Third;
 
 impl Role for Third {
     const NAME: &'static str = "third";
+    type Slot = AuthoritySlot;
 }
 
 #[derive(Debug, Default, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
@@ -840,5 +844,164 @@ fn an_operation_for_a_role_the_program_lacks_does_not_decode() {
     assert_eq!(
         send(PROGRAM, Some(&two(None)), Wire::op::<Third>(Op::Init)),
         Err(Refusal::of::<First>(AuthorityError::MessageDoesNotDecode))
+    );
+}
+
+// A role that keeps more than its holder in its slot, as a freeze authority keeps what it
+// froze.
+
+struct Marking;
+
+impl Role for Marking {
+    const NAME: &'static str = "marking";
+    type Slot = Marked;
+}
+
+impl<C: HasSlot<Marking>> Policy<C> for Marking {}
+
+#[derive(Debug, Default, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+struct Marked {
+    authority_slot: AuthoritySlot,
+    mark: u64,
+}
+
+impl Slot for Marked {
+    fn authority_slot(&self) -> &AuthoritySlot {
+        &self.authority_slot
+    }
+    fn authority_slot_mut(&mut self) -> &mut AuthoritySlot {
+        &mut self.authority_slot
+    }
+}
+
+#[derive(Debug, Default, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+struct WithMark(Marked);
+
+impl HasSlot<Marking> for WithMark {
+    fn slot(&self) -> &Marked {
+        &self.0
+    }
+    fn slot_mut(&mut self) -> &mut Marked {
+        &mut self.0
+    }
+}
+
+#[derive(BorshSerialize, BorshDeserialize)]
+struct SetMark(u64);
+
+impl Gated for SetMark {}
+
+fn marked(authority_slot: AuthoritySlot) -> WithMark {
+    WithMark(Marked {
+        authority_slot,
+        mark: 7,
+    })
+}
+
+fn mark_op(config: &mut WithMark, account: AccountId, op: Op) {
+    let ctx = Ctx {
+        caller: Some(caller(account, None)),
+        program: PROGRAM,
+        gate: InitGate::Deployer,
+    };
+    run_op::<Marking, WithMark>(&ctx, config, op).unwrap();
+}
+
+#[test]
+fn operations_change_only_the_holder_part_of_a_role_s_own_slot() {
+    let mut config = marked(AuthoritySlot::Unset);
+    mark_op(&mut config, PROGRAM, Op::Init);
+    mark_op(&mut config, PROGRAM, Op::Nominate { next: KEY });
+    mark_op(&mut config, KEY, Op::Accept { pda_seed: None });
+    assert_eq!(config, marked(held(KEY)));
+    mark_op(&mut config, KEY, Op::Renounce);
+    assert_eq!(config, marked(AuthoritySlot::Renounced));
+}
+
+/// Runs `handler` at the config, with `pre` as the config's state.
+fn at_config_with<Rs, C>(
+    pre: &C,
+    mark: u64,
+    handler: fn(&ReceiveInput, SetMark) -> Response,
+) -> Option<Refusal>
+where
+    Rs: Roles<C, SetMark>,
+    C: BorshSerialize + BorshDeserialize + Default,
+{
+    let message = Wire::Program(SetMark(mark));
+    let input = ReceiveInput {
+        receiver: config_actor(),
+        from: None,
+        is_authorized: false,
+        pre_state: ActorState::from(borsh::to_vec(pre).unwrap()),
+        message: borsh::to_vec(&message).unwrap(),
+    };
+    try_guard::<Rs, C, SetMark>(&input, &SEED, InitGate::Deployer, message, handler).err()
+}
+
+/// Writes the mark, a part of the role's slot that the handler must leave alone.
+fn set_mark(input: &ReceiveInput, message: SetMark) -> Response {
+    let mut config: WithMark = borsh::from_slice(&input.pre_state).unwrap();
+    config.0.mark = message.0;
+    Response::set_state(borsh::to_vec(&config).unwrap())
+}
+
+#[test]
+fn a_handler_that_changes_the_rest_of_a_role_s_own_slot_is_refused() {
+    let pre = marked(held(PROGRAM));
+    assert_eq!(at_config_with::<(Marking,), _>(&pre, 7, set_mark), None);
+    assert_eq!(
+        at_config_with::<(Marking,), _>(&pre, 8, set_mark),
+        Some(Refusal::of::<Marking>(AuthorityError::SlotChanged))
+    );
+}
+
+/// The freeze's shape: a root role that keeps only its holder, and a second that keeps more.
+#[derive(Debug, Default, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+struct RootAndMark {
+    first: AuthoritySlot,
+    marking: Marked,
+}
+
+impl HasSlot<First> for RootAndMark {
+    fn slot(&self) -> &AuthoritySlot {
+        &self.first
+    }
+    fn slot_mut(&mut self) -> &mut AuthoritySlot {
+        &mut self.first
+    }
+}
+
+impl HasSlot<Marking> for RootAndMark {
+    fn slot(&self) -> &Marked {
+        &self.marking
+    }
+    fn slot_mut(&mut self) -> &mut Marked {
+        &mut self.marking
+    }
+}
+
+fn set_second_mark(input: &ReceiveInput, message: SetMark) -> Response {
+    let mut config: RootAndMark = borsh::from_slice(&input.pre_state).unwrap();
+    config.marking.mark = message.0;
+    Response::set_state(borsh::to_vec(&config).unwrap())
+}
+
+#[test]
+fn a_handler_that_changes_the_rest_of_the_second_role_s_slot_is_refused_by_its_name() {
+    let pre = RootAndMark {
+        first: held(PROGRAM),
+        marking: Marked {
+            authority_slot: held(KEY),
+            mark: 7,
+        },
+    };
+    assert_eq!(
+        at_config_with::<(First, Marking), _>(&pre, 7, set_second_mark),
+        None
+    );
+    assert_eq!(
+        at_config_with::<(First, Marking), _>(&pre, 8, set_second_mark),
+        Some(Refusal::of::<Marking>(AuthorityError::SlotChanged))
     );
 }
