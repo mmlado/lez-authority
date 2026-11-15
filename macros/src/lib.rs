@@ -233,15 +233,18 @@ fn has_slot(input: &DeriveInput, krate: &TokenStream2) -> syn::Result<TokenStrea
                 return Err(Error::new(attr.span(), format!("a second slot for {key}")));
             }
             roles.push(key);
+            // Call-site hygiene so `self` resolves in macro_rules! configs, errors on the type.
+            let ty = Span::call_site().located_at(field.ty.span());
             let member = match &field.ident {
                 Some(ident) => quote!(#ident),
                 None => {
-                    let index = syn::Index::from(index);
+                    let index = syn::Index {
+                        span: ty,
+                        ..syn::Index::from(index)
+                    };
                     quote!(#index)
                 }
             };
-            // Call-site hygiene so `self` resolves in macro_rules! configs, errors on the type.
-            let ty = Span::call_site().located_at(field.ty.span());
             let slot = quote_spanned!(ty=> &self.#member);
             let slot_mut = quote_spanned!(ty=> &mut self.#member);
             impls.push(quote! {

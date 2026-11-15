@@ -254,7 +254,8 @@ impl Caller {
 }
 
 /// The holder part of a role's slot, and the whole slot of a role that keeps only its holder:
-/// nobody yet, a holder with at most one pending nominee, or renounced for good.
+/// nobody yet, nobody yet with a standing offer, a holder with at most one pending nominee,
+/// or renounced for good.
 #[derive(BorshSerialize, BorshDeserialize, Clone, Debug, Default, PartialEq, Eq)]
 pub enum AuthoritySlot {
     /// No holder yet. The state of a config nobody initialized.
@@ -264,11 +265,17 @@ pub enum AuthoritySlot {
     Held {
         /// The holder.
         holder: Holder,
-        /// The account the holder nominated, until it accepts or the offer changes.
+        /// The account the role is offered to, until it accepts or the offer changes.
         nominee: Option<AccountId>,
     },
     /// Renounced. Terminal.
     Renounced,
+    /// No holder yet, with a standing offer of the role to `nominee`. A slot gets one where
+    /// the role's policy lets someone who is not the holder nominate.
+    Offered {
+        /// The account offered the role, until it accepts or the offer changes.
+        nominee: AccountId,
+    },
 }
 
 impl AuthoritySlot {
@@ -281,12 +288,12 @@ impl AuthoritySlot {
         }
     }
 
-    /// The holder, or `None` when unset or renounced.
+    /// The holder, or `None` when the slot has none.
     #[must_use]
     pub fn holder(&self) -> Option<Holder> {
         match self {
             Self::Held { holder, .. } => Some(*holder),
-            Self::Unset | Self::Renounced => None,
+            Self::Unset | Self::Renounced | Self::Offered { .. } => None,
         }
     }
 
@@ -295,6 +302,7 @@ impl AuthoritySlot {
     pub fn nominee(&self) -> Option<AccountId> {
         match self {
             Self::Held { nominee, .. } => *nominee,
+            Self::Offered { nominee } => Some(*nominee),
             Self::Unset | Self::Renounced => None,
         }
     }
@@ -306,7 +314,7 @@ impl AuthoritySlot {
     /// the holder's account reached through the wrong program.
     pub fn check(&self, caller: &Caller) -> Result<(), AuthorityError> {
         let holder = match self {
-            Self::Unset => return Err(AuthorityError::NotInstalled),
+            Self::Unset | Self::Offered { .. } => return Err(AuthorityError::NotInstalled),
             Self::Renounced => return Err(AuthorityError::Renounced),
             Self::Held { holder, .. } => holder,
         };
@@ -367,7 +375,7 @@ pub trait Policy<C>: Role + Sized
 where
     C: HasSlot<Self>,
 {
-    /// Who may install the first holder of the unset slot. By default whoever passes the
+    /// Who may install the first holder of a slot that has none. By default whoever passes the
     /// program's init gate, at top level.
     ///
     /// # Errors
@@ -376,7 +384,8 @@ where
         ctx.passes_gate::<Self>()
     }
 
-    /// Who may nominate. By default the holder.
+    /// Who may nominate. By default the holder. Where a policy lets someone else nominate on
+    /// a slot with no holder, the slot gets a standing offer.
     ///
     /// # Errors
     /// The refusal that stops the nomination.
@@ -413,10 +422,10 @@ pub enum InitGate {
 /// guard runs it under the role's [`Policy`], and the handler never sees it.
 #[derive(BorshSerialize, BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Op {
-    /// Makes the sender the holder of an unset slot.
+    /// Makes the sender the holder of a slot that has none. A standing offer stays.
     Init,
-    /// The holder offers the role to `next`. The all-zero id cancels, a later offer replaces
-    /// an earlier one. Nothing moves until `next` accepts.
+    /// Offers the role to `next`, by default from the holder. The all-zero id cancels, a later
+    /// offer replaces an earlier one. Nothing moves until `next` accepts.
     Nominate {
         /// The account offered the role.
         next: AccountId,
@@ -586,23 +595,31 @@ where
             R::may_install(ctx, config)?;
             let caller = *ctx.vouched::<R>()?;
             let slot = HasSlot::<R>::slot_mut(config).authority_slot_mut();
-            match slot {
-                AuthoritySlot::Unset => {}
+            let nominee = match slot {
+                AuthoritySlot::Unset => None,
+                AuthoritySlot::Offered { nominee } => Some(*nominee),
                 AuthoritySlot::Held { .. } => return Err(refuse(AuthorityError::AlreadyInstalled)),
                 AuthoritySlot::Renounced => return Err(refuse(AuthorityError::Renounced)),
-            }
-            *slot = AuthoritySlot::held(Holder {
-                account: caller.account,
-                via: caller.via,
-            });
+            };
+            *slot = AuthoritySlot::Held {
+                holder: Holder {
+                    account: caller.account,
+                    via: caller.via,
+                },
+                nominee,
+            };
         }
         Op::Nominate { next } => {
             R::may_nominate(ctx, config)?;
-            match HasSlot::<R>::slot_mut(config).authority_slot_mut() {
-                AuthoritySlot::Held { nominee, .. } => {
-                    *nominee = (next != AccountId::default()).then_some(next);
+            let offer = (next != AccountId::default()).then_some(next);
+            let slot = HasSlot::<R>::slot_mut(config).authority_slot_mut();
+            match slot {
+                AuthoritySlot::Held { nominee, .. } => *nominee = offer,
+                AuthoritySlot::Unset | AuthoritySlot::Offered { .. } => {
+                    *slot = offer.map_or(AuthoritySlot::Unset, |nominee| AuthoritySlot::Offered {
+                        nominee,
+                    });
                 }
-                AuthoritySlot::Unset => return Err(refuse(AuthorityError::NotInstalled)),
                 AuthoritySlot::Renounced => return Err(refuse(AuthorityError::Renounced)),
             }
         }
@@ -610,9 +627,10 @@ where
             let caller = *ctx.vouched::<R>()?;
             let slot = HasSlot::<R>::slot_mut(config).authority_slot_mut();
             let pending = match slot {
-                AuthoritySlot::Unset => return Err(refuse(AuthorityError::NotInstalled)),
+                AuthoritySlot::Unset => None,
                 AuthoritySlot::Renounced => return Err(refuse(AuthorityError::Renounced)),
                 AuthoritySlot::Held { nominee, .. } => *nominee,
+                AuthoritySlot::Offered { nominee } => Some(*nominee),
             };
             let Some(nominee) = pending else {
                 return Err(refuse(AuthorityError::NoNomination));

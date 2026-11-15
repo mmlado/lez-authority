@@ -359,6 +359,62 @@ fn accept_after_renounce_is_refused() {
 }
 
 #[test]
+fn the_default_policy_makes_no_offer_on_a_slot_with_no_holder() {
+    assert_eq!(
+        run(
+            Some(caller(PROGRAM, None)),
+            AuthoritySlot::Unset,
+            Op::Nominate { next: KEY }
+        ),
+        Err(AuthorityError::NotInstalled)
+    );
+}
+
+#[test]
+fn a_slot_with_an_offer_has_a_nominee_and_no_holder() {
+    let offered = AuthoritySlot::Offered { nominee: KEY };
+    assert_eq!(offered.holder(), None);
+    assert_eq!(offered.nominee(), Some(KEY));
+    assert_eq!(
+        offered.check(&caller(KEY, None)),
+        Err(AuthorityError::NotInstalled)
+    );
+}
+
+#[test]
+fn install_keeps_a_standing_offer() {
+    assert_eq!(
+        run(
+            Some(caller(PROGRAM, None)),
+            AuthoritySlot::Offered { nominee: KEY },
+            Op::Init
+        ),
+        Ok(AuthoritySlot::Held {
+            holder: Holder {
+                account: PROGRAM,
+                via: None,
+            },
+            nominee: Some(KEY),
+        })
+    );
+}
+
+#[test]
+fn the_slot_s_existing_encodings_keep_their_bytes() {
+    let key = borsh::to_vec(&KEY).unwrap();
+    assert_eq!(borsh::to_vec(&AuthoritySlot::Unset).unwrap(), [0]);
+    assert_eq!(
+        borsh::to_vec(&held(KEY)).unwrap(),
+        [&[1][..], &key, &[0, 0]].concat()
+    );
+    assert_eq!(borsh::to_vec(&AuthoritySlot::Renounced).unwrap(), [2]);
+    assert_eq!(
+        borsh::to_vec(&AuthoritySlot::Offered { nominee: KEY }).unwrap(),
+        [&[3][..], &key].concat()
+    );
+}
+
+#[test]
 fn install_refuses_a_held_slot() {
     assert_eq!(
         run(Some(caller(PROGRAM, None)), held(KEY), Op::Init),
@@ -410,6 +466,10 @@ impl<C: HasSlot<First> + HasSlot<Second>> Policy<C> for Second {
     fn may_nominate(ctx: &Ctx, config: &C) -> Result<(), Refusal> {
         ctx.check::<Second>(HasSlot::<Second>::slot(config))
             .or_else(|_| ctx.check::<First>(HasSlot::<First>::slot(config)))
+    }
+
+    fn may_renounce(ctx: &Ctx, config: &C) -> Result<(), Refusal> {
+        Self::may_nominate(ctx, config)
     }
 
     fn renounced() -> AuthoritySlot {
@@ -638,6 +698,71 @@ fn require_refuses_a_message_that_skipped_the_seat() {
         refused,
         Some(Refusal::of::<Second>(AuthorityError::NotThroughSeat))
     );
+}
+
+#[test]
+fn an_offer_on_a_slot_with_no_holder_is_made_replaced_and_cancelled() {
+    let offer = |next| Wire::op::<Second>(Op::Nominate { next });
+    let config = send(PROGRAM, Some(&two(None)), offer(KEY)).unwrap();
+    assert_eq!(config.second, AuthoritySlot::Offered { nominee: KEY });
+    let config = send(PROGRAM, Some(&config), offer(OTHER)).unwrap();
+    assert_eq!(config.second, AuthoritySlot::Offered { nominee: OTHER });
+    let config = send(PROGRAM, Some(&config), offer(AccountId::default())).unwrap();
+    assert_eq!(config, two(None));
+    let config = send(PROGRAM, Some(&config), offer(AccountId::default())).unwrap();
+    assert_eq!(config, two(None));
+}
+
+#[test]
+fn only_the_offered_account_accepts_and_then_holds_the_role() {
+    let offer = Wire::op::<Second>(Op::Nominate { next: KEY });
+    let config = send(PROGRAM, Some(&two(None)), offer).unwrap();
+    let accept = || Wire::op::<Second>(Op::Accept { pda_seed: None });
+    assert_eq!(
+        send(OTHER, Some(&config), accept()),
+        Err(Refusal::of::<Second>(AuthorityError::NotNominee))
+    );
+    assert_eq!(send(KEY, Some(&config), accept()), Ok(two(Some(KEY))));
+}
+
+#[test]
+fn an_accept_with_nothing_offered_is_refused_as_no_nomination() {
+    let accept = || Wire::op::<Second>(Op::Accept { pda_seed: None });
+    assert_eq!(
+        send(KEY, Some(&two(None)), accept()),
+        Err(Refusal::of::<Second>(AuthorityError::NoNomination))
+    );
+    let offer = |next| Wire::op::<Second>(Op::Nominate { next });
+    let offered = send(PROGRAM, Some(&two(None)), offer(KEY)).unwrap();
+    let cancelled = send(PROGRAM, Some(&offered), offer(AccountId::default())).unwrap();
+    assert_eq!(
+        send(KEY, Some(&cancelled), accept()),
+        Err(Refusal::of::<Second>(AuthorityError::NoNomination))
+    );
+}
+
+#[test]
+fn a_nomination_does_not_revive_a_renounced_slot() {
+    let renounced = Two {
+        second: AuthoritySlot::Renounced,
+        ..two(None)
+    };
+    assert_eq!(
+        send(
+            PROGRAM,
+            Some(&renounced),
+            Wire::op::<Second>(Op::Nominate { next: KEY })
+        ),
+        Err(Refusal::of::<Second>(AuthorityError::Renounced))
+    );
+}
+
+#[test]
+fn a_renounce_withdraws_a_standing_offer() {
+    let offer = Wire::op::<Second>(Op::Nominate { next: KEY });
+    let offered = send(PROGRAM, Some(&two(None)), offer).unwrap();
+    let config = send(PROGRAM, Some(&offered), Wire::op::<Second>(Op::Renounce)).unwrap();
+    assert_eq!(config, two(None));
 }
 
 #[test]
@@ -1003,5 +1128,26 @@ fn a_handler_that_changes_the_rest_of_the_second_role_s_slot_is_refused_by_its_n
     assert_eq!(
         at_config_with::<(First, Marking), _>(&pre, 8, set_second_mark),
         Some(Refusal::of::<Marking>(AuthorityError::SlotChanged))
+    );
+}
+
+fn replace_first(input: &ReceiveInput, _message: SetMark) -> Response {
+    let mut config: RootAndMark = borsh::from_slice(&input.pre_state).unwrap();
+    config.first = held(OTHER);
+    Response::set_state(borsh::to_vec(&config).unwrap())
+}
+
+#[test]
+fn a_handler_that_replaces_the_first_role_s_holder_is_refused_by_its_name() {
+    let pre = RootAndMark {
+        first: held(PROGRAM),
+        marking: Marked {
+            authority_slot: held(KEY),
+            mark: 7,
+        },
+    };
+    assert_eq!(
+        at_config_with::<(First, Marking), _>(&pre, 7, replace_first),
+        Some(Refusal::of::<First>(AuthorityError::SlotChanged))
     );
 }

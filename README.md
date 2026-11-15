@@ -129,6 +129,7 @@ pub enum AuthoritySlot {
     Unset,
     Held { holder: Holder, nominee: Option<AccountId> },
     Renounced,
+    Offered { nominee: AccountId },
 }
 
 pub struct Holder {
@@ -137,12 +138,12 @@ pub struct Holder {
 }
 ```
 
-`Unset` is the default before the first install. `Held` has one holder and at most one standing offer of the role, the nominee. `Renounced` is for good. The four management operations, sent as library messages and run by the guard. The "who" is the default `Policy`:
+`Unset` is the default before the first install. `Held` has one holder and at most one standing offer of the role, the nominee. `Renounced` is for good. `Offered` has no holder yet and a standing offer, which a slot gets where the role's policy lets someone who is not the holder nominate. The four management operations, sent as library messages and run by the guard. The "who" is the default `Policy`:
 
 | Operation | Who | Effect |
 | --- | --- | --- |
-| `Init` | the deployer, or the genesis key, at top level | installs the sender as holder of an unset slot. The root role's `Init` creates the config |
-| `Nominate { next }` | the holder | records the standing offer, the all-zero id cancels it |
+| `Init` | the deployer, or the genesis key, at top level | installs the sender as holder of a slot that has none, keeping a standing offer. The root role's `Init` creates the config |
+| `Nominate { next }` | the holder | records the standing offer, the all-zero id cancels it. On a slot with no holder, where the policy allows it, the offer makes the slot `Offered` |
 | `Accept { pda_seed }` | the nominee, through its own seat | takes the role, a PDA proves itself with the seed that derives it under the program that reached its seat |
 | `Renounce` | the holder | resets the holder part, offer included, by default for good. Whatever else the role keeps in its slot stays |
 

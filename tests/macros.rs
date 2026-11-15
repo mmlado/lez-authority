@@ -198,6 +198,10 @@ with_slot! {
     }
 }
 
+with_slot! {
+    struct WrappedTuple(#[slot(First)] AuthoritySlot);
+}
+
 #[test]
 fn a_config_a_macro_writes_derives_its_slot() {
     assert_eq!(
@@ -206,6 +210,10 @@ fn a_config_a_macro_writes_derives_its_slot() {
     );
     assert_eq!(
         HasSlot::<First>::slot(&Wrapped::default()),
+        &AuthoritySlot::Unset
+    );
+    assert_eq!(
+        HasSlot::<First>::slot(&WrappedTuple::default()),
         &AuthoritySlot::Unset
     );
 }
