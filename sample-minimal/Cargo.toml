@@ -1,0 +1,10 @@
+[package]
+name = "sample-minimal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The smallest program with an admin and a freeze authority: an open, an admin-only and an exempt message, all state in the config"
+publish = false
+
+[dependencies]
+lez-freeze-authority.workspace = true
