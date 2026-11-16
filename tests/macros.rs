@@ -9,7 +9,8 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use lee_core::account::{AccountId, Actor, ActorState};
 use lee_core::program::{PdaSeed, ReceiveInput, Response};
 use lez_authority::{
-    AuthoritySlot, Gated, HasSlot, Holder, InitGate, Op, Policy, Role, Slot, Wire, config_account,
+    AuthoritySlot, Gated, HasSlot, Holder, InitGate, Op, Policy, Role, Roles, Slot, Wire,
+    config_account,
 };
 
 struct First;
@@ -37,6 +38,8 @@ impl Role for Third {
     const NAME: &'static str = "third";
     type Slot = Tagged;
 }
+
+impl<C: HasSlot<Third>> Policy<C> for Third {}
 
 #[derive(Debug, Default, PartialEq, Eq)]
 struct Tagged {
@@ -157,6 +160,50 @@ fn every_derived_message_declares_what_its_hand_written_twin_does() {
         assert_eq!(derived.exempt::<First>(), by_hand.exempt::<First>());
         assert_eq!(derived.exempt::<Second>(), by_hand.exempt::<Second>());
     }
+}
+
+#[test]
+fn the_derive_names_each_marked_role_once_for_the_guard_to_check() {
+    assert_eq!(<Message as Gated>::MARKED, [First::NAME, Second::NAME]);
+    const {
+        assert!(<(First, Second) as Roles<Config, Message>>::MARKS_LISTED);
+        assert!(!<(First,) as Roles<Config, Message>>::MARKS_LISTED);
+        assert!(!<(First, Third) as Roles<Mixed, Message>>::MARKS_LISTED);
+    }
+}
+
+// A program's own items named like the derive's internals, and a role that is the enum's own.
+#[allow(dead_code, non_upper_case_globals)]
+mod clashing {
+    use super::{First, Second};
+    use lez_authority::{Gated, Role};
+
+    static role: u8 = 1;
+    const id: u8 = 2;
+
+    #[derive(Gated)]
+    pub enum Message<__R> {
+        #[only(First)]
+        #[exempt(Second)]
+        Set(__R),
+    }
+
+    #[derive(Gated)]
+    pub enum ByRole<R: Role> {
+        #[only(R)]
+        Set(core::marker::PhantomData<R>),
+    }
+}
+
+#[test]
+fn the_derive_compiles_beside_items_named_like_its_internals() {
+    let message = clashing::Message::Set(1u8);
+    assert!(message.needs::<First>());
+    assert!(!message.needs::<Second>());
+    assert!(message.exempt::<Second>());
+    let by_role = clashing::ByRole::<Second>::Set(core::marker::PhantomData);
+    assert!(by_role.needs::<Second>());
+    assert_eq!(<clashing::ByRole<Second> as Gated>::MARKED, [Second::NAME]);
 }
 
 #[test]

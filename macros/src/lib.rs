@@ -367,6 +367,10 @@ fn guard_handler(
             !<(#(#roles,)*) as #krate::Roles<#config, #message_type>>::ROOT_BY_NOMINATION_ONLY,
             "the first role creates the config with its Init, so its holder cannot be appointed only by nomination"
         );
+        const _: () = ::core::assert!(
+            <(#(#roles,)*) as #krate::Roles<#config, #message_type>>::MARKS_LISTED,
+            "a marker on the message enum names a role that is not among the guard's roles"
+        );
     };
     Ok(quote! {
         #(#attributes)*
@@ -394,6 +398,12 @@ fn has_slot(input: &DeriveInput, krate: &TokenStream2) -> syn::Result<TokenStrea
             "HasSlot derives on the config struct",
         ));
     };
+    if let Some(attr) = input.attrs.iter().find(|attr| attr.path().is_ident("slot")) {
+        return Err(Error::new(
+            attr.span(),
+            "#[slot(Role)] goes on a field of the config struct",
+        ));
+    }
     let name = &input.ident;
     let (impl_generics, type_generics, where_clause) = input.generics.split_for_impl();
     let mut roles: Vec<String> = Vec::new();
@@ -463,11 +473,29 @@ fn gated(input: &DeriveInput, krate: &TokenStream2) -> syn::Result<TokenStream2>
             "the message enum must stay below 255 variants: the first byte 255 marks the library's messages",
         ));
     }
+    // rustc takes a derive's helpers anywhere in the item, and only a variant's are read.
+    let fields = data.variants.iter().flat_map(|variant| &variant.fields);
+    for attr in input
+        .attrs
+        .iter()
+        .chain(fields.flat_map(|field| &field.attrs))
+    {
+        if ["only", "from_config", "exempt"]
+            .iter()
+            .any(|marker| attr.path().is_ident(marker))
+        {
+            return Err(Error::new(
+                attr.span(),
+                "a marker goes on a variant of the message enum",
+            ));
+        }
+    }
     let name = &input.ident;
     let (impl_generics, type_generics, where_clause) = input.generics.split_for_impl();
     let mut needs = Vec::new();
     let mut from_config = Vec::new();
     let mut exempt = Vec::new();
+    let mut marked: Vec<(String, Path)> = Vec::new();
     for variant in &data.variants {
         let ident = &variant.ident;
         let mut role: Option<Path> = None;
@@ -509,7 +537,7 @@ fn gated(input: &DeriveInput, krate: &TokenStream2) -> syn::Result<TokenStream2>
         }
         if let Some(role) = &role {
             needs.push(quote! {
-                Self::#ident { .. } => role == id::<#role>(),
+                Self::#ident { .. } => id::<__LezRole>() == id::<#role>(),
             });
         }
         if config_only {
@@ -517,18 +545,23 @@ fn gated(input: &DeriveInput, krate: &TokenStream2) -> syn::Result<TokenStream2>
         }
         if let Some(role) = &exempt_from {
             exempt.push(quote! {
-                Self::#ident { .. } => role == id::<#role>(),
+                Self::#ident { .. } => id::<__LezRole>() == id::<#role>(),
             });
+        }
+        for marker in role.iter().chain(&exempt_from) {
+            let named = key(marker);
+            if !marked.iter().any(|(seen, _)| *seen == named) {
+                marked.push((named, marker.clone()));
+            }
         }
     }
     let needs = (!needs.is_empty()).then(|| {
         quote! {
-            fn needs<__R: #krate::Role>(&self) -> bool {
+            fn needs<__LezRole: #krate::Role>(&self) -> bool {
                 // Bounded on Role, so a marker naming any other type fails to compile.
                 fn id<__T: #krate::Role>() -> ::core::any::TypeId {
                     ::core::any::TypeId::of::<__T>()
                 }
-                let role = id::<__R>();
                 #[allow(unreachable_patterns)]
                 match self {
                     #(#needs)*
@@ -546,12 +579,11 @@ fn gated(input: &DeriveInput, krate: &TokenStream2) -> syn::Result<TokenStream2>
     });
     let exempt = (!exempt.is_empty()).then(|| {
         quote! {
-            fn exempt<__R: #krate::Role>(&self) -> bool {
+            fn exempt<__LezRole: #krate::Role>(&self) -> bool {
                 // Bounded on Role, so a marker naming any other type fails to compile.
                 fn id<__T: #krate::Role>() -> ::core::any::TypeId {
                     ::core::any::TypeId::of::<__T>()
                 }
-                let role = id::<__R>();
                 #[allow(unreachable_patterns)]
                 match self {
                     #(#exempt)*
@@ -560,8 +592,15 @@ fn gated(input: &DeriveInput, krate: &TokenStream2) -> syn::Result<TokenStream2>
             }
         }
     });
+    let marked = (!marked.is_empty()).then(|| {
+        let roles = marked.iter().map(|(_, role)| role);
+        quote! {
+            const MARKED: &'static [&'static str] = &[#(<#roles as #krate::Role>::NAME),*];
+        }
+    });
     Ok(quote! {
         impl #impl_generics #krate::Gated for #name #type_generics #where_clause {
+            #marked
             #needs
             #from_config
             #exempt
@@ -797,6 +836,13 @@ mod tests {
         assert_eq!(
             refusal(
                 has_slot,
+                "#[slot(Admin)] struct Config { #[slot(Admin)] admin: AuthoritySlot }"
+            ),
+            "#[slot(Role)] goes on a field of the config struct"
+        );
+        assert_eq!(
+            refusal(
+                has_slot,
                 "struct Config { #[slot(Admin)] a: AuthoritySlot, #[slot(Admin)] b: AuthoritySlot }"
             ),
             "a second slot for Admin"
@@ -820,6 +866,19 @@ mod tests {
             refusal(gated, "enum Message { #[from_config(x)] Set(u64) }"),
             "#[from_config] takes no arguments"
         );
+        for source in [
+            "#[only(Admin)] enum Message { Set(u64) }",
+            "#[from_config] enum Message { Set(u64) }",
+            "#[exempt(Freeze)] enum Message { Set(u64) }",
+            "enum Message { Set(#[only(Admin)] u64) }",
+            "enum Message { Set { #[exempt(Freeze)] value: u64 } }",
+        ] {
+            assert_eq!(
+                refusal(gated, source),
+                "a marker goes on a variant of the message enum",
+                "{source}"
+            );
+        }
         let many: Vec<String> = (0..255).map(|i| format!("V{i}")).collect();
         assert_eq!(
             refusal(gated, &format!("enum Message {{ {} }}", many.join(", "))),
@@ -868,7 +927,7 @@ mod tests {
     }
 
     #[test]
-    fn the_guard_checks_its_first_role_in_a_const_cargo_check_evaluates() {
+    fn the_guard_checks_its_roles_in_consts_cargo_check_evaluates() {
         let expanded: String = guard_handler(
             "roles(Admin, Freeze), config = Config, seed = SEED"
                 .parse()
@@ -883,6 +942,10 @@ mod tests {
         .collect();
         assert!(
             expanded.contains("const_:()=::core::assert!(!<(Admin,Freeze,)as::lez_authority::Roles<Config,Message>>::ROOT_BY_NOMINATION_ONLY"),
+            "{expanded}"
+        );
+        assert!(
+            expanded.contains("const_:()=::core::assert!(<(Admin,Freeze,)as::lez_authority::Roles<Config,Message>>::MARKS_LISTED"),
             "{expanded}"
         );
     }

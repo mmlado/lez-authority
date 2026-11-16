@@ -1914,11 +1914,12 @@ fn ask_through_seat(sender: AccountId, pre: &Marks, message: Ask) -> Result<Resp
 }
 
 #[test]
-fn a_lone_role_s_rules_refuse_a_program_message() {
+fn a_lone_role_s_rules_refuse_every_program_message_but_an_exempt_one() {
     assert_eq!(
         ask::<(Marking,)>(&marks(0, 7), Ask::Open).err(),
         Some(Refusal::of::<Marking>(HALTED))
     );
+    assert!(ask::<(Marking,)>(&marks(0, 7), Ask::ExemptMarking).is_ok());
     assert!(ask::<(Marking,)>(&marks(7, 0), Ask::Open).is_ok());
 }
 
@@ -1967,4 +1968,14 @@ fn a_role_s_rules_see_who_sent_a_message_through_its_seat() {
         Some(Refusal::of::<Halting>(BARRED))
     );
     assert!(ask::<(Marking, Halting)>(&held_by_other, Ask::Open).is_ok());
+}
+
+#[test]
+fn a_marked_role_is_listed_only_under_its_exact_name() {
+    assert!(listed(&["admin", "freeze"], &["freeze", "admin"]));
+    assert!(listed(&["admin"], &[]));
+    assert!(!listed(&["admin"], &["freeze"]));
+    assert!(!listed(&["admin"], &["admi"]));
+    assert!(!listed(&["admin"], &["admins"]));
+    assert!(!listed(&["admin", "freeze"], &["admin", "pauser"]));
 }

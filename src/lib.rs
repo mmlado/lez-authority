@@ -735,7 +735,63 @@ impl<M: BorshDeserialize> BorshDeserialize for Wire<M> {
 ///     Set(u64),
 /// }
 /// ```
+///
+/// The role must be one of the guard's roles, so a marker naming any other role does not
+/// compile either. The guard attribute refuses it where `cargo check` sees it, and a guard
+/// called by hand at `cargo build`:
+///
+/// ```compile_fail,E0080
+/// use borsh::{BorshDeserialize, BorshSerialize};
+/// use lee_core::program::{ReceiveInput, Response};
+/// use lez_authority::{AuthoritySlot, Gated, HasSlot, InitGate, Policy, Role, Wire};
+///
+/// struct Owner;
+///
+/// impl Role for Owner {
+///     const NAME: &'static str = "owner";
+///     type Slot = AuthoritySlot;
+/// }
+///
+/// impl<C: HasSlot<Owner>> Policy<C> for Owner {}
+///
+/// struct Pauser;
+///
+/// impl Role for Pauser {
+///     const NAME: &'static str = "pauser";
+///     type Slot = AuthoritySlot;
+/// }
+///
+/// #[derive(Default, BorshSerialize, BorshDeserialize, HasSlot)]
+/// struct Config {
+///     #[slot(Owner)]
+///     owner: AuthoritySlot,
+/// }
+///
+/// #[derive(BorshSerialize, BorshDeserialize, Gated)]
+/// enum Message {
+///     #[only(Pauser)]
+///     Pause,
+/// }
+///
+/// fn handle(input: &ReceiveInput, message: Wire<Message>) -> Response {
+///     let seed = lez_authority::seed(b"owner-only");
+///     lez_authority::guard::<(Owner,), Config, Message>(
+///         input,
+///         &seed,
+///         InitGate::Deployer,
+///         message,
+///         |_, _| Response::keep_state(),
+///     )
+/// }
+///
+/// let _reified: fn(&ReceiveInput, Wire<Message>) -> Response = handle;
+/// ```
 pub trait Gated {
+    /// The names of the roles this enum's markers name, which the guard compares with its own
+    /// roles at compile time. The derive fills it.
+    #[doc(hidden)]
+    const MARKED: &'static [&'static str] = &[];
+
     /// Whether this message needs role `R`'s holder. The guard then takes it only through
     /// the sender's own actor and checks the holder before the handler runs. A message that
     /// needs two roles needs one caller holding both.
@@ -923,6 +979,38 @@ where
     }
 }
 
+/// Whether every name in `marked` is one of `names`, compared by name since a const cannot
+/// compare TypeIds.
+const fn listed(names: &[&str], marked: &[&str]) -> bool {
+    let mut m = 0;
+    while m < marked.len() {
+        let mut n = 0;
+        while n < names.len() && !same(names[n], marked[m]) {
+            n += 1;
+        }
+        if n == names.len() {
+            return false;
+        }
+        m += 1;
+    }
+    true
+}
+
+const fn same(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < a.len() {
+        if a[i] != b[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
 mod sealed {
     pub trait Sealed {}
     impl<A> Sealed for (A,) {}
@@ -942,6 +1030,10 @@ pub trait Roles<C, M>: sealed::Sealed {
     /// refuses at compile time.
     #[doc(hidden)]
     const ROOT_BY_NOMINATION_ONLY: bool;
+    /// Whether every role the message enum's markers name is one of these, which the guard
+    /// checks at compile time.
+    #[doc(hidden)]
+    const MARKS_LISTED: bool;
     /// The place in the tuple of the role with this name.
     #[doc(hidden)]
     fn index(name: &str) -> Option<usize>;
@@ -974,6 +1066,7 @@ where
     const ROOT: &'static str = A::NAME;
     const ROOT_PROSE: &'static str = A::PROSE_NAME;
     const ROOT_BY_NOMINATION_ONLY: bool = A::BY_NOMINATION_ONLY;
+    const MARKS_LISTED: bool = listed(&[A::NAME], M::MARKED);
 
     fn index(name: &str) -> Option<usize> {
         (name == A::NAME).then_some(0)
@@ -1014,6 +1107,7 @@ where
     const ROOT: &'static str = A::NAME;
     const ROOT_PROSE: &'static str = A::PROSE_NAME;
     const ROOT_BY_NOMINATION_ONLY: bool = A::BY_NOMINATION_ONLY;
+    const MARKS_LISTED: bool = listed(&[A::NAME, B::NAME], M::MARKED);
 
     fn index(name: &str) -> Option<usize> {
         if name == A::NAME {
@@ -1143,6 +1237,10 @@ where
         assert!(
             !Rs::ROOT_BY_NOMINATION_ONLY,
             "the first role creates the config with its Init, so its holder cannot be appointed only by nomination"
+        );
+        assert!(
+            Rs::MARKS_LISTED,
+            "a marker on the message enum names a role that is not among the guard's roles"
         );
     }
     let refuse = |error| Refusal {
