@@ -13,11 +13,11 @@ The freeze role's slot in the config: the freeze authority, whether the program 
 _Avoid_: freeze config (the v0.2 word), freeze state
 
 **Freeze**:
-The program-wide state in which every program message is refused, wherever it is sent, except library messages and exempt messages.
+The program-wide state in which every program message is refused, wherever it is sent, except exempt messages. A freeze never refuses a management operation.
 _Avoid_: pause, halt, program-wide freeze
 
 **Frozen account**:
-An account the freeze authority froze. Every program message with that account as its caller is refused, except library messages and exempt messages.
+An account the freeze authority froze. Every program message with that account as its caller is refused, except exempt messages. Its management operations still run.
 _Avoid_: blocked account, blocklisted account
 
 **Freeze operation**:

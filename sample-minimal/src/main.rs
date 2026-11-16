@@ -1,6 +1,7 @@
 //! The smallest program with an admin and a freeze authority: a plain LEZ program whose state
 //! lives on one account. It depends on lez-freeze-authority alone, keeps the freeze slot beside
-//! the admin's in its config, and names both roles in the engine's guard attribute.
+//! the admin's in its config, names both roles in the engine's guard attribute, and marks the
+//! one message that runs through a freeze.
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use lee_core::program::{PdaSeed, ReceiveInput, Response};
@@ -12,17 +13,21 @@ const CONFIG_SEED: PdaSeed = lez_freeze_authority::seed(b"lez-freeze-sample-mini
 struct Config {
     open_value: u64,
     admin_value: u64,
+    exempt_value: u64,
     #[slot(Admin)]
     admin: AuthoritySlot,
     #[slot(Freeze)]
     freeze: FreezeSlot,
 }
 
+#[allow(clippy::enum_variant_names)]
 #[derive(Debug, BorshSerialize, BorshDeserialize, Gated)]
 enum Message {
     SetOpenValue(u64),
     #[only(Admin)]
     SetAdminValue(u64),
+    #[exempt(Freeze)]
+    SetExemptValue(u64),
 }
 
 #[lez_freeze_authority::guard(roles(Admin, Freeze), config = Config, seed = CONFIG_SEED)]
@@ -31,6 +36,7 @@ fn handle_message(input: &ReceiveInput, message: Message) -> Response {
     match message {
         Message::SetOpenValue(value) => config.open_value = value,
         Message::SetAdminValue(value) => config.admin_value = value,
+        Message::SetExemptValue(value) => config.exempt_value = value,
     }
     Response::set_state(borsh::to_vec(&config).expect("the config encodes"))
 }
@@ -43,7 +49,9 @@ mod tests {
         account::{AccountId, Actor, ActorState},
         program::{SyncMessage, Transition},
     };
-    use lez_freeze_authority::{Holder, Op, Slot, Wire, admin_op, freeze_authority_op};
+    use lez_freeze_authority::{
+        FreezeOp, Holder, Op, Slot, Wire, admin_op, freeze_authority_op, freeze_op,
+    };
 
     use super::*;
 
@@ -120,6 +128,26 @@ mod tests {
 
     fn accept() -> Wire<Message> {
         freeze_authority_op(Op::Accept { pda_seed: None })
+    }
+
+    /// `message` sent straight to the config, by nobody in particular.
+    fn straight(pre: &Config, message: Message) -> Config {
+        written(&run(
+            config_actor(),
+            None,
+            false,
+            borsh::to_vec(pre).unwrap(),
+            message.into(),
+        ))
+    }
+
+    /// The config once the freeze authority froze the program.
+    fn frozen_program() -> Config {
+        send(
+            AUTHORITY,
+            &config(holder(AUTHORITY)),
+            freeze_op(FreezeOp::Freeze),
+        )
     }
 
     #[test]
@@ -231,5 +259,80 @@ mod tests {
             ..config(holder(AUTHORITY))
         };
         send(DEPLOYER, &without_admin, Message::SetAdminValue(1).into());
+    }
+
+    #[test]
+    fn the_freeze_authority_freezes_and_releases_the_program() {
+        let frozen = frozen_program();
+        assert!(frozen.freeze.is_frozen());
+        assert_eq!(
+            send(AUTHORITY, &frozen, freeze_op(FreezeOp::Release)),
+            config(holder(AUTHORITY))
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "lez-freeze-authority/freeze E217: the program is frozen")]
+    fn a_freeze_refuses_the_open_message() {
+        straight(&frozen_program(), Message::SetOpenValue(7));
+    }
+
+    #[test]
+    #[should_panic(expected = "lez-freeze-authority/freeze E217: the program is frozen")]
+    fn a_freeze_refuses_the_admin_message() {
+        send(
+            DEPLOYER,
+            &frozen_program(),
+            Message::SetAdminValue(9).into(),
+        );
+    }
+
+    #[test]
+    fn anyone_sets_the_exempt_value_through_a_freeze() {
+        assert_eq!(
+            straight(&frozen_program(), Message::SetExemptValue(5)),
+            Config {
+                exempt_value: 5,
+                ..frozen_program()
+            }
+        );
+    }
+
+    #[test]
+    fn after_a_release_every_message_runs_again() {
+        let released = send(AUTHORITY, &frozen_program(), freeze_op(FreezeOp::Release));
+        let opened = straight(&released, Message::SetOpenValue(7));
+        assert_eq!(
+            send(DEPLOYER, &opened, Message::SetAdminValue(9).into()),
+            Config {
+                open_value: 7,
+                admin_value: 9,
+                ..config(holder(AUTHORITY))
+            }
+        );
+    }
+
+    #[test]
+    fn the_admin_replaces_the_freeze_authority_of_a_frozen_program() {
+        let nominated = send(DEPLOYER, &frozen_program(), nominate(SUCCESSOR));
+        let replaced = send(SUCCESSOR, &nominated, accept());
+        assert!(replaced.freeze.is_frozen());
+        assert_eq!(replaced.freeze.authority_slot(), &holder(SUCCESSOR));
+        assert_eq!(
+            send(SUCCESSOR, &replaced, freeze_op(FreezeOp::Release)),
+            config(holder(SUCCESSOR))
+        );
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "lez-authority/freeze E103: the signing account is not the freeze authority"
+    )]
+    fn the_admin_cannot_freeze() {
+        send(
+            DEPLOYER,
+            &config(holder(AUTHORITY)),
+            freeze_op(FreezeOp::Freeze),
+        );
     }
 }

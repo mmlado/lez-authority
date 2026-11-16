@@ -3,7 +3,7 @@
 //! admin and the engine. It puts the engine's guard on its handler with `roles(Admin, Freeze)`,
 //! and its config holds the freeze slot in a field marked `#[slot(Freeze)]`. A message that runs
 //! through a freeze is marked `#[exempt(Freeze)]`. The admin's `#[admin]` names the admin alone,
-//! so a freeze slot under it is never reached.
+//! so a freeze slot under it is never reached and a marker naming `Freeze` does not compile.
 
 #![warn(missing_docs)]
 
