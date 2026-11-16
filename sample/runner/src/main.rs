@@ -1,6 +1,6 @@
 //! Drives the token sample on a local sequencer and reads the state back after each step: the
-//! admin's `Init`, a mint, then the freeze authority appointed, replaced, revoked and appointed
-//! again, and a second mint.
+//! admin's `Init`, a mint, the freeze authority appointed, replaced and revoked, a second mint,
+//! the freeze authority appointed again, and a mint by the admin to itself.
 //!
 //! Usage: sample-runner <sample.bin> <payer account id>
 
@@ -128,6 +128,7 @@ async fn main() -> Result<()> {
         "the freeze role's init",
     )
     .await?;
+    check(&wallet, program, &expected, "after it, unchanged").await?;
     refused(
         &mut wallet,
         payer,
@@ -137,7 +138,7 @@ async fn main() -> Result<()> {
         "a stranger's nomination",
     )
     .await?;
-    check(&wallet, program, &expected, "after the refusals, unchanged").await?;
+    check(&wallet, program, &expected, "after it, unchanged").await?;
 
     call(
         &wallet,
@@ -159,6 +160,7 @@ async fn main() -> Result<()> {
         "a stranger's accept",
     )
     .await?;
+    check(&wallet, program, &expected, "after it, unchanged").await?;
     call(&wallet, payer, send(authority), &accept(), "accept").await?;
     let expected = with_freeze(deployer, held(authority));
     check(&wallet, program, &expected, "after the first appointment").await?;
@@ -169,6 +171,21 @@ async fn main() -> Result<()> {
         send(deployer),
         &nominate(successor),
         "replace",
+    )
+    .await?;
+    let offered = AuthoritySlot::Held {
+        holder: Holder {
+            account: authority,
+            via: None,
+        },
+        nominee: Some(successor),
+    };
+    let expected = with_freeze(deployer, offered);
+    check(
+        &wallet,
+        program,
+        &expected,
+        "after the admin's offer, the authority still holds",
     )
     .await?;
     call(
@@ -207,6 +224,17 @@ async fn main() -> Result<()> {
     .await?;
     check(&wallet, program, &expected, "after it, unchanged").await?;
 
+    // The config is the first mint's again, so the gas difference is the balance alone.
+    call(
+        &wallet,
+        payer,
+        to_owner(deployer, authority),
+        &mint(authority, 3),
+        "second mint",
+    )
+    .await?;
+    check_balance(&wallet, program, authority, 8, "after the second mint").await?;
+
     call(
         &wallet,
         payer,
@@ -229,15 +257,22 @@ async fn main() -> Result<()> {
     call(
         &wallet,
         payer,
-        to_owner(deployer, authority),
-        &mint(authority, 3),
-        "second mint",
+        to_owner(deployer, deployer),
+        &mint(deployer, 2),
+        "the admin's mint to itself",
     )
     .await?;
-    check_balance(&wallet, program, authority, 8, "after the second mint").await?;
+    check_balance(
+        &wallet,
+        program,
+        deployer,
+        2,
+        "after the admin's mint to itself",
+    )
+    .await?;
 
     println!(
-        "all steps behaved. Each refused call carried its code in the wallet's simulation, then was included and reverted on chain, with the same code in the sequencer log."
+        "all steps behaved. Each refused call carried its code in the wallet's simulation, then was included on chain and changed nothing."
     );
     Ok(())
 }
