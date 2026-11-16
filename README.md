@@ -25,6 +25,7 @@ A message that needs the holder of a role goes to the sender's own actor under t
 client ──────► is_authorized?     hop       from an actor of P?       send      from == (C, P)?
                via = the program ─────────► caller = from.account ──────────► handler(input, message)
                that reached me              holder checks
+                                            each role's may_run
                                             handler(input, message)
                                             slots unchanged?
 ```
@@ -100,17 +101,19 @@ The attribute turns the handler into an inner function and puts `lez_authority::
 | Message | Where it runs |
 | --- | --- |
 | A role's operation: `Init`, `Nominate`, `Accept`, `Renounce`, or one the role defines for itself | sent to the sender's seat and forwarded. The guard runs it at the config under the role's policy, and the handler never sees it |
-| One marked `#[only(R)]` | sent to the sender's seat and forwarded. At the config the guard checks `R`'s holder, then the handler runs |
+| One marked `#[only(R)]` | sent to the sender's seat and forwarded. At the config the guard checks `R`'s holder and each role's consent, then the handler runs |
 | One marked `#[from_config]` | at another actor of the program, only when the config account sent it |
 | Anything else | where it is sent, as in a program without the guard |
 
-At the config every program message needs an initialized config, and the guard refuses a handler whose write changed a slot. The handler of a message that came through a seat sees `input.from` as the sender's own actor and `input.message` as the hop. Wherever the handler runs, the guard refuses a response that sends the config a library message, which the config would take for a hop from that actor. A client builds a role's operation with `Wire::op::<R>(op)`.
+At the config every program message needs an initialized config and the consent of each role it is not exempt from, and the guard refuses a handler whose write changed a slot. The handler of a message that came through a seat sees `input.from` as the sender's own actor and `input.message` as the hop. Wherever the handler runs, the guard refuses a response that sends the config a library message, which the config would take for a hop from that actor. A client builds a role's operation with `Wire::op::<R>(op)`.
 
 ## Roles
 
-A role is a type with `Role`, which names it in refusals and in a client's operation message and gives the type of its slot, and `Policy<C>`, which says who may install, nominate and renounce, what renounce leaves, and what the role's own operations do. `Role::PROSE_NAME` names the role in a refusal's sentence where its name alone does not read well, as "freeze authority" does for `freeze`. `Policy::BY_NOMINATION_ONLY` marks a role whose holder is only ever appointed by nomination: its `Init` is refused with E137, and the guard attribute refuses a first role with it where `cargo check` sees it, at its `roles(..)`. A guard called by hand is refused at `cargo build`. The defaults are the rules of a role that answers to nobody and defines no operations of its own, so such a role implements `Policy` empty, as `Owner` does above. `HasSlot<R>` puts the role's slot in the config. A role that keeps only its holder takes `AuthoritySlot` as its slot. One that keeps more, as a freeze authority keeps what it froze, takes a type of its own that implements `Slot`, which hands the guard the `AuthoritySlot` inside it.
+A role is a type with `Role`, which names it in refusals and in a client's operation message and gives the type of its slot, and `Policy<C>`, which says who may install, nominate and renounce, what renounce leaves, what the role's own operations do, and which program messages may run. `Role::PROSE_NAME` names the role in a refusal's sentence where its name alone does not read well, as "freeze authority" does for `freeze`. `Policy::BY_NOMINATION_ONLY` marks a role whose holder is only ever appointed by nomination: its `Init` is refused with E137, and the guard attribute refuses a first role with it where `cargo check` sees it, at its `roles(..)`. A guard called by hand is refused at `cargo build`. The defaults are the rules of a role that answers to nobody, defines no operations of its own and lets every program message run, so such a role implements `Policy` empty, as `Owner` does above. `HasSlot<R>` puts the role's slot in the config. A role that keeps only its holder takes `AuthoritySlot` as its slot. One that keeps more, as a freeze authority keeps what it froze, takes a type of its own that implements `Slot`, which hands the guard the `AuthoritySlot` inside it.
 
 A role may define operations of its own, as a freeze authority defines a freeze. A client sends one as `Op::Own`, in the role's own encoding, and the guard runs it at the config as it runs `Nominate`: through the sender's seat, and never before the root role's `Init`. Its bytes run to the end of the message with no length in front, so a client's IDL can describe them as the role's own type. `Policy::operate` decodes them, applies the role's rules and returns the role's slot as the operation leaves it. The guard checks no holder first, so those rules say who may send each operation. The guard writes back that slot alone and keeps its holder part as it was: the holder moves only through `Init`, `Nominate`, `Accept` and `Renounce`. A role that defines none refuses one with E108, a message that does not decode.
+
+A role may also refuse program messages, as a freeze authority refuses every one while the program is frozen. At the config the guard asks each role's `Policy::may_run` after the holders a message needs, and before the handler runs. A message marked `#[exempt(R)]` skips role `R`'s answer, and still needs its holders and leaves the slots alone. A management operation never reaches `may_run`, so a role's operations always run.
 
 A program names its roles in the attribute: `roles(A)` for one, `roles(A, B)` for two. The first is the root. Its `Init` creates the config, and the guard's own refusals name it. A second role that answers to the first overrides the rules that differ and reads the first role's slot through the config, the way a freeze authority answers to the admin. A message may need either role's holder, or both ([ADR-0003](docs/adr/0003-roles-compose-through-traits.md)).
 
@@ -122,9 +125,9 @@ A role crate, one that defines roles for programs to use, is named `lez-<role>-a
 | --- | --- | --- |
 | `#[guard(roles(..), config = C, seed = S)]` | the handler | the outer function and the call to `guard`. `genesis = KEY` replaces the deployer gate |
 | `#[derive(HasSlot)]`, `#[slot(R)]` | the config, its slot field | `HasSlot<R>` |
-| `#[derive(Gated)]`, `#[only(R)]`, `#[from_config]` | the message enum, its variants | `Gated` |
+| `#[derive(Gated)]`, `#[only(R)]`, `#[from_config]`, `#[exempt(R)]` | the message enum, its variants | `Gated` |
 
-`#[only]` takes one role. A misplaced marker is a compile error with the reason, such as `a message is either #[only(..)], sent through the sender's seat, or #[from_config], sent by the config`. [`tests/macros.rs`](tests/macros.rs) holds the derives against hand-written impls, and a handler under the attribute against its hand expansion, input by input, refusals included. The macros find this crate through a direct dependency on it, or on a role crate (see [Roles](#roles)). They take one that every build links: required dependencies first, then those for a target, then optional ones, then dev-dependencies, and within each of these, this crate ahead of a role crate. A program whose dependencies do not fit the rule depends on this crate directly, at the tag its role crate pins, and the macros take it first. A build script's macros look in its build-dependencies instead. A new role crate needs no change here.
+`#[only]` and `#[exempt]` take one role each. A misplaced marker is a compile error with the reason, such as `a message is either #[only(..)], sent through the sender's seat, or #[from_config], sent by the config`. [`tests/macros.rs`](tests/macros.rs) holds the derives against hand-written impls, and a handler under the attribute against its hand expansion, input by input, refusals included. The macros find this crate through a direct dependency on it, or on a role crate (see [Roles](#roles)). They take one that every build links: required dependencies first, then those for a target, then optional ones, then dev-dependencies, and within each of these, this crate ahead of a role crate. A program whose dependencies do not fit the rule depends on this crate directly, at the tag its role crate pins, and the macros take it first. A build script's macros look in its build-dependencies instead. A new role crate needs no change here.
 
 ## The slot
 
@@ -203,6 +206,7 @@ Numbers up to 116 follow the v0.2 `AdminError` table where a refusal has the sam
 | Only a seat sends the config a library message, wherever the handler runs | an open message at a holder's actor, sent unsigned, whose handler passes a client's bytes on as a hop the config would take for the holder's (E135) |
 | Every slot is compared around the handler | a handler replacing a holder, or changing what a role keeps in its slot (E126) |
 | A role's own operation writes back that role's slot alone, with its holder part kept | an operation reviving a renounced holder, or moving the holder past the nomination, the accept and the seed proof |
+| Each role's `may_run` answers at the config for every program message not exempt from it, after the holders, and never for a management operation | a program message running through a freeze at the config, or a freeze stopping its own release |
 | The seed proof on a PDA accept, and `via` on the holder | a program that inherited a grant accepting on a PDA's behalf (E107), or acting for it later (E120) |
 | Whole-transaction revert | a program whose seeded call fails at the config also loses its own state change |
 
@@ -212,7 +216,7 @@ A PDA holder's grant comes with the call, so the handler, and every program it c
 
 ## What is not here
 
-- A check inside a handler arm, or one that depends on the message's data or the program's state. The guard checks a message by its variant, before the handler, so a conditional rule splits into an open variant and an `#[only(R)]` one.
+- A check inside a handler arm, or one that depends on the message's data or on the program's state outside the roles' slots. The guard checks a message by its variant and by what the roles keep in their slots, before the handler, so a conditional rule splits into an open variant and an `#[only(R)]` one.
 - The root role's `Init` with the program's own settings. It writes the config's `Default` with the holder installed, so make the default a safe state and set the rest with `#[only(R)]` messages.
 - Private holders and private config accounts.
 - Client code beyond `Wire::op`. The admin repo's runner is the reference client.

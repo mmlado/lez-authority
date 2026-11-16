@@ -15,15 +15,15 @@
 //! [`guard`](macro@guard) attribute puts the guard in front of that handler. The library's
 //! own messages, the roles' management operations and the hop, travel as a [`Wire`] message
 //! behind a reserved first byte, so the program's enum hosts none of them. A program marks
-//! the messages that need a holder, and the ones only the config may send, through
-//! [`Gated`].
+//! the messages that need a holder, the ones only the config may send, and the ones exempt
+//! from a role's rules, through [`Gated`].
 //!
 //! A program names its roles as a tuple, [`Roles`]: one role, `(A,)`, or two, `(A, B)`.
 //! Each keeps its own slot in the config. The first creates the config.
 //!
 //! This crate is policy-free. Which role a slot plays comes from the consumer through
-//! [`Role`], and who may install, nominate and renounce, and what a role's own operations do,
-//! through [`Policy`].
+//! [`Role`], and who may install, nominate and renounce, what a role's own operations do, and
+//! which program messages may run, through [`Policy`].
 
 #![warn(missing_docs)]
 
@@ -31,8 +31,8 @@
 extern crate self as lez_authority;
 
 /// Derive `HasSlot` from fields marked `#[slot(Role)]`, and `Gated` from messages marked
-/// `#[only(Role)]` or `#[from_config]`. Put [`guard`](macro@guard) on the handler. See
-/// [`lez_authority_macros`].
+/// `#[only(Role)]`, `#[from_config]` or `#[exempt(Role)]`. Put [`guard`](macro@guard) on the
+/// handler. See [`lez_authority_macros`].
 pub use lez_authority_macros::{Gated, HasSlot, guard};
 
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -401,11 +401,12 @@ pub trait HasSlot<R: Role> {
     fn slot_mut(&mut self) -> &mut R::Slot;
 }
 
-/// Who may install, nominate and renounce role `Self` in a config `C`, and what the operations
-/// it defines for itself do. Every method holds the rule of a role that answers to nobody else
-/// and defines no operations of its own, so such a role implements it empty. A role that
-/// answers to another, as a freeze authority answers to the admin, overrides the rules that
-/// differ and reads the other role's slot through `C`.
+/// Who may install, nominate and renounce role `Self` in a config `C`, what the operations it
+/// defines for itself do, and which program messages may run. Every method holds the rule of a
+/// role that answers to nobody else, defines no operations of its own and lets every message
+/// run, so such a role implements it empty. A role that answers to another, as a freeze
+/// authority answers to the admin, overrides the rules that differ and reads the other role's
+/// slot through `C`.
 pub trait Policy<C>: Role + Sized
 where
     C: HasSlot<Self>,
@@ -555,6 +556,17 @@ where
     fn operate(_ctx: &Ctx, _config: &C, _op: &[u8]) -> Result<Self::Slot, Refusal> {
         Err(Refusal::of::<Self>(AuthorityError::MessageDoesNotDecode))
     }
+
+    /// Whether a program message may run at the config under the role's rules, as a freeze
+    /// refuses every one while the program is frozen. The guard asks after the holders the
+    /// message needs, and not for a message marked `#[exempt(Self)]`. A management operation
+    /// never reaches it, so the role's operations always run. By default every message may run.
+    ///
+    /// # Errors
+    /// The refusal that stops the message.
+    fn may_run(_ctx: &Ctx, _config: &C) -> Result<(), Refusal> {
+        Ok(())
+    }
 }
 
 /// Who may install the first holder.
@@ -698,8 +710,31 @@ impl<M: BorshDeserialize> BorshDeserialize for Wire<M> {
 }
 
 /// What the program's messages declare to the guard. Derive it with `#[only(Role)]` on a
-/// message that needs a role's holder, the way `onlyOwner` marks a Solidity function, and
-/// `#[from_config]` on one that only the config account may send.
+/// message that needs a role's holder, the way `onlyOwner` marks a Solidity function,
+/// `#[from_config]` on one that only the config account may send, and `#[exempt(Role)]` on one
+/// that runs where that role's rules would refuse it.
+///
+/// A marker names a role, so a marker naming any other type does not compile:
+///
+/// ```compile_fail,E0277
+/// use lez_authority::Gated;
+///
+/// #[derive(Gated)]
+/// enum Message {
+///     #[only(u64)]
+///     Set(u64),
+/// }
+/// ```
+///
+/// ```compile_fail,E0277
+/// use lez_authority::{AuthoritySlot, Gated};
+///
+/// #[derive(Gated)]
+/// enum Message {
+///     #[exempt(AuthoritySlot)]
+///     Set(u64),
+/// }
+/// ```
 pub trait Gated {
     /// Whether this message needs role `R`'s holder. The guard then takes it only through
     /// the sender's own actor and checks the holder before the handler runs. A message that
@@ -711,6 +746,12 @@ pub trait Gated {
     /// Whether only the config account may send this message, as it does to the program's
     /// other actors.
     fn only_from_config(&self) -> bool {
+        false
+    }
+
+    /// Whether this message runs where role `R`'s [`Policy::may_run`] would refuse it, as an
+    /// exempt message runs through a freeze. The mark covers this message only.
+    fn exempt<R: Role>(&self) -> bool {
         false
     }
 }
@@ -856,6 +897,19 @@ where
     Ok(())
 }
 
+/// Role `R`'s consent to a program message at the config, unless the message is exempt from it.
+fn may_run<R, C, M>(ctx: &Ctx, config: &C, message: &M) -> Result<(), Refusal>
+where
+    R: Policy<C>,
+    C: HasSlot<R>,
+    M: Gated,
+{
+    if message.exempt::<R>() {
+        return Ok(());
+    }
+    R::may_run(ctx, config)
+}
+
 /// The handler must leave every slot as it found it.
 fn unchanged<R, C>(after: &C, before: &C) -> Result<(), Refusal>
 where
@@ -903,6 +957,9 @@ pub trait Roles<C, M>: sealed::Sealed {
     /// Checks the holders the message declares it needs.
     #[doc(hidden)]
     fn gate(ctx: &Ctx, config: &C, message: &M) -> Result<(), Refusal>;
+    /// Asks each role the message is not exempt from whether it may run.
+    #[doc(hidden)]
+    fn may_run(ctx: &Ctx, config: &C, message: &M) -> Result<(), Refusal>;
     /// Refuses a slot in `after` that differs from the same slot in `before`.
     #[doc(hidden)]
     fn unchanged(after: &C, before: &C) -> Result<(), Refusal>;
@@ -936,6 +993,10 @@ where
 
     fn gate(ctx: &Ctx, config: &C, message: &M) -> Result<(), Refusal> {
         gate::<A, C, M>(ctx, config, message)
+    }
+
+    fn may_run(ctx: &Ctx, config: &C, message: &M) -> Result<(), Refusal> {
+        may_run::<A, C, M>(ctx, config, message)
     }
 
     fn unchanged(after: &C, before: &C) -> Result<(), Refusal> {
@@ -987,6 +1048,11 @@ where
         gate::<B, C, M>(ctx, config, message)
     }
 
+    fn may_run(ctx: &Ctx, config: &C, message: &M) -> Result<(), Refusal> {
+        may_run::<A, C, M>(ctx, config, message)?;
+        may_run::<B, C, M>(ctx, config, message)
+    }
+
     fn unchanged(after: &C, before: &C) -> Result<(), Refusal> {
         unchanged::<A, C>(after, before)?;
         unchanged::<B, C>(after, before)
@@ -1023,10 +1089,12 @@ pub const fn seed(label: &[u8]) -> PdaSeed {
 /// - A library operation goes to the config through the sender's seat, and the guard runs it
 ///   there under the role's policy. The root role's `Init` creates the config.
 /// - A message that needs a holder goes the same way. At the config the guard checks the
-///   holder, runs the handler, and refuses a result that changed a slot.
+///   holder, asks [`Policy::may_run`] of each role the message is not exempt from, runs the
+///   handler, and refuses a result that changed a slot.
 /// - A message only the config sends runs only when it came from the config account.
 /// - Anything else runs where it was sent, as in a program without the guard. At the config
-///   that needs an initialized config, and the slots are checked afterwards.
+///   that needs an initialized config and the consent of each role it is not exempt from, and
+///   the slots are checked afterwards.
 ///
 /// Wherever the handler runs, the guard refuses a response that sends the config a library
 /// message, which the config would take for a hop from that actor.
@@ -1191,7 +1259,8 @@ where
     Ok(Response::set_state(bytes))
 }
 
-/// A program message at the config: the declared holders, the handler, then the slots.
+/// A program message at the config: the declared holders, the roles' consent, the handler,
+/// then the slots.
 fn at_the_config<Rs, C, M>(
     input: &ReceiveInput,
     program: AccountId,
@@ -1222,6 +1291,7 @@ where
         gate,
     };
     Rs::gate(&ctx, &config, &message)?;
+    Rs::may_run(&ctx, &config, &message)?;
     let response = handler(input, message)?;
     if let Some(post) = &response.post_state {
         let post: &[u8] = post;

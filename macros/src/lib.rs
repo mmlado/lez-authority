@@ -1,7 +1,7 @@
 //! Macros for lez-authority. The `guard` attribute puts the guard in front of a plain LEZ
 //! handler. `HasSlot` comes from fields marked `#[slot(Role)]`, and `Gated` from messages
-//! marked `#[only(Role)]` or `#[from_config]`. The derives write only the trait impls a
-//! program could write by hand.
+//! marked `#[only(Role)]`, `#[from_config]` or `#[exempt(Role)]`. The derives write only the
+//! trait impls a program could write by hand.
 
 use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as TokenStream2};
@@ -59,8 +59,9 @@ pub fn derive_has_slot(input: TokenStream) -> TokenStream {
 }
 
 /// Implements `Gated` from markers on the message enum's variants: `#[only(R)]` on a message
-/// that needs role `R`'s holder, one role per message, and `#[from_config]` on one that only
-/// the config account may send.
+/// that needs role `R`'s holder, one role per message, `#[from_config]` on one that only the
+/// config account may send, and `#[exempt(R)]` on one that runs where role `R`'s rules would
+/// refuse it, one role per message.
 ///
 /// ```ignore
 /// #[derive(BorshSerialize, BorshDeserialize, Gated)]
@@ -70,9 +71,11 @@ pub fn derive_has_slot(input: TokenStream) -> TokenStream {
 ///     SetAdminValue(u64),
 ///     #[from_config]
 ///     TargetValue(u64),
+///     #[exempt(Freeze)]
+///     ExemptValue(u64),
 /// }
 /// ```
-#[proc_macro_derive(Gated, attributes(only, from_config))]
+#[proc_macro_derive(Gated, attributes(only, from_config, exempt))]
 pub fn derive_gated(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as DeriveInput);
     krate()
@@ -445,6 +448,8 @@ fn has_slot(input: &DeriveInput, krate: &TokenStream2) -> syn::Result<TokenStrea
 const ONE_ROLE: &str =
     "#[only] takes one role, as in #[only(Admin)]: a message for two roles is not supported yet";
 
+const EXEMPT_ONE_ROLE: &str = "#[exempt] takes one role, as in #[exempt(Freeze)]";
+
 fn gated(input: &DeriveInput, krate: &TokenStream2) -> syn::Result<TokenStream2> {
     let Data::Enum(data) = &input.data else {
         return Err(Error::new(
@@ -462,10 +467,12 @@ fn gated(input: &DeriveInput, krate: &TokenStream2) -> syn::Result<TokenStream2>
     let (impl_generics, type_generics, where_clause) = input.generics.split_for_impl();
     let mut needs = Vec::new();
     let mut from_config = Vec::new();
+    let mut exempt = Vec::new();
     for variant in &data.variants {
         let ident = &variant.ident;
         let mut role: Option<Path> = None;
         let mut config_only = false;
+        let mut exempt_from: Option<Path> = None;
         for attr in &variant.attrs {
             if attr.path().is_ident("only") {
                 let one_role = || Error::new(attr.span(), ONE_ROLE);
@@ -482,6 +489,16 @@ fn gated(input: &DeriveInput, krate: &TokenStream2) -> syn::Result<TokenStream2>
                     return Err(Error::new(attr.span(), "#[from_config] takes no arguments"));
                 }
                 config_only = true;
+            } else if attr.path().is_ident("exempt") {
+                let one_role = || Error::new(attr.span(), EXEMPT_ONE_ROLE);
+                let listed = attr
+                    .parse_args_with(Punctuated::<Path, Token![,]>::parse_terminated)
+                    .map_err(|_| one_role())?;
+                let mut listed = listed.into_iter();
+                match (listed.next(), listed.next(), &exempt_from) {
+                    (Some(from), None, None) => exempt_from = Some(from),
+                    _ => return Err(one_role()),
+                }
             }
         }
         if config_only && role.is_some() {
@@ -492,17 +509,26 @@ fn gated(input: &DeriveInput, krate: &TokenStream2) -> syn::Result<TokenStream2>
         }
         if let Some(role) = &role {
             needs.push(quote! {
-                Self::#ident { .. } => role == ::core::any::TypeId::of::<#role>(),
+                Self::#ident { .. } => role == id::<#role>(),
             });
         }
         if config_only {
             from_config.push(ident);
         }
+        if let Some(role) = &exempt_from {
+            exempt.push(quote! {
+                Self::#ident { .. } => role == id::<#role>(),
+            });
+        }
     }
     let needs = (!needs.is_empty()).then(|| {
         quote! {
             fn needs<__R: #krate::Role>(&self) -> bool {
-                let role = ::core::any::TypeId::of::<__R>();
+                // Bounded on Role, so a marker naming any other type fails to compile.
+                fn id<__T: #krate::Role>() -> ::core::any::TypeId {
+                    ::core::any::TypeId::of::<__T>()
+                }
+                let role = id::<__R>();
                 #[allow(unreachable_patterns)]
                 match self {
                     #(#needs)*
@@ -518,10 +544,27 @@ fn gated(input: &DeriveInput, krate: &TokenStream2) -> syn::Result<TokenStream2>
             }
         }
     });
+    let exempt = (!exempt.is_empty()).then(|| {
+        quote! {
+            fn exempt<__R: #krate::Role>(&self) -> bool {
+                // Bounded on Role, so a marker naming any other type fails to compile.
+                fn id<__T: #krate::Role>() -> ::core::any::TypeId {
+                    ::core::any::TypeId::of::<__T>()
+                }
+                let role = id::<__R>();
+                #[allow(unreachable_patterns)]
+                match self {
+                    #(#exempt)*
+                    _ => false,
+                }
+            }
+        }
+    });
     Ok(quote! {
         impl #impl_generics #krate::Gated for #name #type_generics #where_clause {
             #needs
             #from_config
+            #exempt
         }
     })
 }
@@ -802,6 +845,26 @@ mod tests {
             ),
             one_role
         );
+    }
+
+    #[test]
+    fn exempt_takes_one_role_and_sits_beside_the_other_markers() {
+        let one_role = "#[exempt] takes one role, as in #[exempt(Freeze)]";
+        for source in [
+            "enum Message { #[exempt(Admin, Freeze)] Set(u64) }",
+            "enum Message { #[exempt] Set(u64) }",
+            "enum Message { #[exempt = Freeze] Set(u64) }",
+            "enum Message { #[exempt(Freeze)] #[exempt(Freeze)] Set(u64) }",
+        ] {
+            assert_eq!(refusal(gated, source), one_role, "{source}");
+        }
+        for source in [
+            "enum Message { #[only(Admin)] #[exempt(Freeze)] Set(u64) }",
+            "enum Message { #[from_config] #[exempt(Freeze)] Set(u64) }",
+        ] {
+            let input: DeriveInput = syn::parse_str(source).unwrap();
+            assert!(gated(&input, &quote!(::lez_authority)).is_ok(), "{source}");
+        }
     }
 
     #[test]

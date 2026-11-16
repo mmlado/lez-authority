@@ -1000,7 +1000,14 @@ impl Role for Marking {
     type Slot = Marked;
 }
 
-// Its own operation sets the mark, as a freeze authority's sets its flag.
+/// What the marking role answers to a program message while its mark is zero.
+const HALTED: AuthorityError = AuthorityError::Role {
+    krate: "lez-marking-authority",
+    code: 201,
+    sentence: "the mark is zero",
+};
+
+// Its own operation sets the mark, and a zero mark stops program messages, as a freeze does.
 impl<C: HasSlot<Marking>> Policy<C> for Marking {
     fn operate(ctx: &Ctx, config: &C, op: &[u8]) -> Result<Marked, Refusal> {
         let mark = borsh::from_slice(op)
@@ -1011,6 +1018,13 @@ impl<C: HasSlot<Marking>> Policy<C> for Marking {
             authority_slot: slot.authority_slot.clone(),
             mark,
         })
+    }
+
+    fn may_run(_ctx: &Ctx, config: &C) -> Result<(), Refusal> {
+        if HasSlot::<Marking>::slot(config).mark == 0 {
+            return Err(Refusal::of::<Marking>(HALTED));
+        }
+        Ok(())
     }
 }
 
@@ -1279,7 +1293,7 @@ fn a_role_appointed_only_by_nomination_refuses_every_init() {
     }
 }
 
-fn keep(_input: &ReceiveInput, _message: SetMark) -> Response {
+fn keep<M>(_input: &ReceiveInput, _message: M) -> Response {
     Response::keep_state()
 }
 
@@ -1352,14 +1366,20 @@ fn a_slot_change_names_the_slot_by_the_role_s_name() {
     );
 }
 
-/// Runs `message` at `receiver` of a program with the roles `(First, Marking)`.
-fn at_marked(
+/// Runs `message` at `receiver` of a program with the roles `Rs` and the config `C`.
+fn at_with<Rs, C, M>(
     receiver: Actor,
     from: Option<Actor>,
     authorized: bool,
-    pre: Option<&RootAndMark>,
-    message: Wire<SetMark>,
-) -> Result<Response, Refusal> {
+    pre: Option<&C>,
+    message: Wire<M>,
+    handler: fn(&ReceiveInput, M) -> Response,
+) -> Result<Response, Refusal>
+where
+    Rs: Roles<C, M>,
+    C: BorshSerialize + BorshDeserialize + Default,
+    M: Gated + BorshSerialize + BorshDeserialize,
+{
     let input = ReceiveInput {
         receiver,
         from,
@@ -1367,13 +1387,32 @@ fn at_marked(
         pre_state: ActorState::from(pre.map(|c| borsh::to_vec(c).unwrap()).unwrap_or_default()),
         message: borsh::to_vec(&message).unwrap(),
     };
-    try_guard::<(First, Marking), RootAndMark, SetMark>(
-        &input,
-        &SEED,
-        InitGate::Deployer,
-        message,
-        keep,
-    )
+    try_guard::<Rs, C, M>(&input, &SEED, InitGate::Deployer, message, handler)
+}
+
+/// Runs `message` at `receiver` of a program with the roles `(First, Marking)`.
+fn at_marked_with<M>(
+    receiver: Actor,
+    from: Option<Actor>,
+    authorized: bool,
+    pre: Option<&RootAndMark>,
+    message: Wire<M>,
+    handler: fn(&ReceiveInput, M) -> Response,
+) -> Result<Response, Refusal>
+where
+    M: Gated + BorshSerialize + BorshDeserialize,
+{
+    at_with::<(First, Marking), RootAndMark, M>(receiver, from, authorized, pre, message, handler)
+}
+
+fn at_marked(
+    receiver: Actor,
+    from: Option<Actor>,
+    authorized: bool,
+    pre: Option<&RootAndMark>,
+    message: Wire<SetMark>,
+) -> Result<Response, Refusal> {
+    at_marked_with(receiver, from, authorized, pre, message, keep)
 }
 
 /// From `sender`'s seat to the config of a program with the roles `(First, Marking)`. The
@@ -1549,4 +1588,383 @@ fn a_role_s_own_operation_never_moves_its_holder() {
             })
         );
     }
+}
+
+/// A program message for `(First, Marking)`: open or needing the first role's holder, and
+/// exempt from the marking role's rules or not.
+#[derive(BorshSerialize, BorshDeserialize)]
+enum Halt {
+    Open,
+    Gated,
+    Exempt,
+    GatedExempt,
+    ExemptTouch,
+}
+
+impl Gated for Halt {
+    fn needs<R: Role>(&self) -> bool {
+        matches!(self, Halt::Gated | Halt::GatedExempt)
+            && std::any::TypeId::of::<R>() == std::any::TypeId::of::<First>()
+    }
+
+    fn exempt<R: Role>(&self) -> bool {
+        matches!(self, Halt::Exempt | Halt::GatedExempt | Halt::ExemptTouch)
+            && std::any::TypeId::of::<R>() == std::any::TypeId::of::<Marking>()
+    }
+}
+
+/// Keeps the config, but for `ExemptTouch`, which moves the marking role's mark.
+fn halt(input: &ReceiveInput, message: Halt) -> Response {
+    if let Halt::ExemptTouch = message {
+        let mut config: RootAndMark = borsh::from_slice(&input.pre_state).unwrap();
+        config.marking.mark += 1;
+        return Response::set_state(borsh::to_vec(&config).unwrap());
+    }
+    Response::keep_state()
+}
+
+/// `root_and_mark()` with the mark at zero.
+fn halted() -> RootAndMark {
+    let mut config = root_and_mark();
+    config.marking.mark = 0;
+    config
+}
+
+/// `message` sent straight to the config.
+fn straight(pre: &RootAndMark, message: Halt) -> Result<Response, Refusal> {
+    at_marked_with(
+        config_actor(),
+        None,
+        false,
+        Some(pre),
+        Wire::Program(message),
+        halt,
+    )
+}
+
+/// `message` from `sender`'s seat to the config.
+fn halt_through_seat(
+    sender: AccountId,
+    pre: &RootAndMark,
+    message: Halt,
+) -> Result<Response, Refusal> {
+    let hop = at_marked_with(
+        seat_of(sender),
+        None,
+        true,
+        None,
+        Wire::Program(message),
+        halt,
+    )?;
+    let hop: Wire<Halt> = borsh::from_slice(&hop.sync_messages[0].message).unwrap();
+    at_marked_with(
+        config_actor(),
+        Some(seat_of(sender)),
+        false,
+        Some(pre),
+        hop,
+        halt,
+    )
+}
+
+#[test]
+fn a_role_s_rules_refuse_a_program_message_at_the_config_in_its_name() {
+    let refused = Some(Refusal::of::<Marking>(HALTED));
+    assert_eq!(straight(&halted(), Halt::Open).err(), refused);
+    assert_eq!(
+        halt_through_seat(PROGRAM, &halted(), Halt::Gated).err(),
+        refused
+    );
+    assert!(straight(&root_and_mark(), Halt::Open).is_ok());
+    assert!(halt_through_seat(PROGRAM, &root_and_mark(), Halt::Gated).is_ok());
+    assert_eq!(
+        Refusal::of::<Marking>(HALTED).text(),
+        "lez-marking-authority/marking E201: the mark is zero"
+    );
+}
+
+#[test]
+fn a_message_exempt_from_a_role_runs_where_its_rules_would_refuse_it() {
+    assert!(straight(&halted(), Halt::Exempt).is_ok());
+    assert!(halt_through_seat(PROGRAM, &halted(), Halt::GatedExempt).is_ok());
+}
+
+#[test]
+fn an_exempt_message_still_needs_its_holder_and_leaves_the_slots_alone() {
+    assert_eq!(
+        halt_through_seat(OTHER, &halted(), Halt::GatedExempt).err(),
+        Some(Refusal::of::<First>(AuthorityError::NotHolder))
+    );
+    assert_eq!(
+        straight(&halted(), Halt::ExemptTouch).err(),
+        Some(Refusal::of::<Marking>(AuthorityError::SlotChanged))
+    );
+}
+
+#[test]
+fn the_holders_come_before_a_role_s_rules() {
+    assert_eq!(
+        halt_through_seat(OTHER, &halted(), Halt::Gated).err(),
+        Some(Refusal::of::<First>(AuthorityError::NotHolder))
+    );
+}
+
+#[test]
+fn a_role_s_rules_never_see_a_management_operation() {
+    let mut expected = halted();
+    expected.marking.mark = 9;
+    assert_eq!(
+        send_marked(KEY, Some(&halted()), set_mark_op(9)),
+        Ok(expected)
+    );
+    let nominate = Wire::op::<First>(Op::Nominate { next: OTHER });
+    let nominated = send_marked(PROGRAM, Some(&halted()), nominate).unwrap();
+    assert_eq!(nominated.first.nominee(), Some(OTHER));
+}
+
+#[test]
+fn before_init_an_exempt_message_at_the_config_is_refused_too() {
+    assert_eq!(
+        at_marked_with(
+            config_actor(),
+            None,
+            false,
+            None,
+            Wire::Program(Halt::Exempt),
+            halt
+        )
+        .err(),
+        Some(Refusal::of::<First>(AuthorityError::NotInitialized))
+    );
+}
+
+fn never(_input: &ReceiveInput, _message: SetMark) -> Response {
+    unreachable!("a refused message never reaches the handler")
+}
+
+#[test]
+fn a_role_s_rules_answer_before_the_handler_runs() {
+    let refused = Some(Refusal::of::<Marking>(HALTED));
+    assert_eq!(
+        at_config_with::<(First, Marking), _>(&halted(), 7, never),
+        refused
+    );
+    assert_eq!(
+        at_config_with::<(First, Marking), _>(&halted(), 8, set_second_mark),
+        refused
+    );
+}
+
+#[test]
+fn an_exempt_message_at_a_config_that_does_not_decode_is_refused() {
+    let message = Wire::Program(Halt::Exempt);
+    let input = ReceiveInput {
+        receiver: config_actor(),
+        from: None,
+        is_authorized: false,
+        pre_state: ActorState::from(vec![9]),
+        message: borsh::to_vec(&message).unwrap(),
+    };
+    assert_eq!(
+        try_guard::<(First, Marking), RootAndMark, Halt>(
+            &input,
+            &SEED,
+            InitGate::Deployer,
+            message,
+            halt
+        )
+        .err(),
+        Some(Refusal::of::<First>(AuthorityError::ConfigDoesNotDecode))
+    );
+}
+
+// A second role whose rules refuse, so the tests can tell the two roles' answers apart.
+struct Halting;
+
+impl Role for Halting {
+    const NAME: &'static str = "halting";
+    type Slot = Marked;
+}
+
+/// What the halting role answers to a program message while its mark is zero.
+const STOPPED: AuthorityError = AuthorityError::Role {
+    krate: "lez-halting-authority",
+    code: 201,
+    sentence: "the halt is on",
+};
+
+/// What the halting role answers to a program message `OTHER` sent through its seat.
+const BARRED: AuthorityError = AuthorityError::Role {
+    krate: "lez-halting-authority",
+    code: 202,
+    sentence: "the sender is barred",
+};
+
+// It reads the caller, as a freeze of single accounts does.
+impl<C: HasSlot<Halting>> Policy<C> for Halting {
+    fn may_run(ctx: &Ctx, config: &C) -> Result<(), Refusal> {
+        if HasSlot::<Halting>::slot(config).mark == 0 {
+            return Err(Refusal::of::<Halting>(STOPPED));
+        }
+        if ctx.caller().is_some_and(|caller| caller.account() == OTHER) {
+            return Err(Refusal::of::<Halting>(BARRED));
+        }
+        Ok(())
+    }
+}
+
+/// The slots of two roles whose rules may both refuse.
+#[derive(Debug, Default, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+struct Marks {
+    marking: Marked,
+    halting: Marked,
+}
+
+impl HasSlot<Marking> for Marks {
+    fn slot(&self) -> &Marked {
+        &self.marking
+    }
+    fn slot_mut(&mut self) -> &mut Marked {
+        &mut self.marking
+    }
+}
+
+impl HasSlot<Halting> for Marks {
+    fn slot(&self) -> &Marked {
+        &self.halting
+    }
+    fn slot_mut(&mut self) -> &mut Marked {
+        &mut self.halting
+    }
+}
+
+/// The marking role held by `KEY` and the halting role by the deployer, with their marks.
+fn marks(marking: u64, halting: u64) -> Marks {
+    Marks {
+        marking: Marked {
+            authority_slot: held(KEY),
+            mark: marking,
+        },
+        halting: Marked {
+            authority_slot: held(PROGRAM),
+            mark: halting,
+        },
+    }
+}
+
+/// A program message for the marking and halting roles: open, exempt from one of them, or
+/// needing the marking role's holder.
+#[derive(BorshSerialize, BorshDeserialize)]
+enum Ask {
+    Open,
+    ExemptMarking,
+    ExemptHalting,
+    GatedMarking,
+}
+
+impl Gated for Ask {
+    fn needs<R: Role>(&self) -> bool {
+        matches!(self, Ask::GatedMarking)
+            && std::any::TypeId::of::<R>() == std::any::TypeId::of::<Marking>()
+    }
+
+    fn exempt<R: Role>(&self) -> bool {
+        let role = std::any::TypeId::of::<R>();
+        match self {
+            Ask::ExemptMarking => role == std::any::TypeId::of::<Marking>(),
+            Ask::ExemptHalting => role == std::any::TypeId::of::<Halting>(),
+            _ => false,
+        }
+    }
+}
+
+/// `message` sent straight to the config of a program with the roles `Rs`.
+fn ask<Rs: Roles<Marks, Ask>>(pre: &Marks, message: Ask) -> Result<Response, Refusal> {
+    at_with::<Rs, Marks, Ask>(
+        config_actor(),
+        None,
+        false,
+        Some(pre),
+        Wire::Program(message),
+        keep,
+    )
+}
+
+/// `message` from `sender`'s seat to the config of a program with the roles
+/// `(Marking, Halting)`.
+fn ask_through_seat(sender: AccountId, pre: &Marks, message: Ask) -> Result<Response, Refusal> {
+    type Both = (Marking, Halting);
+    let hop = at_with::<Both, Marks, Ask>(
+        seat_of(sender),
+        None,
+        true,
+        None,
+        Wire::Program(message),
+        keep,
+    )?;
+    let hop: Wire<Ask> = borsh::from_slice(&hop.sync_messages[0].message).unwrap();
+    at_with::<Both, Marks, Ask>(
+        config_actor(),
+        Some(seat_of(sender)),
+        false,
+        Some(pre),
+        hop,
+        keep,
+    )
+}
+
+#[test]
+fn a_lone_role_s_rules_refuse_a_program_message() {
+    assert_eq!(
+        ask::<(Marking,)>(&marks(0, 7), Ask::Open).err(),
+        Some(Refusal::of::<Marking>(HALTED))
+    );
+    assert!(ask::<(Marking,)>(&marks(7, 0), Ask::Open).is_ok());
+}
+
+#[test]
+fn the_roles_answer_in_their_order() {
+    assert_eq!(
+        ask::<(Marking, Halting)>(&marks(0, 0), Ask::Open).err(),
+        Some(Refusal::of::<Marking>(HALTED))
+    );
+    assert_eq!(
+        ask::<(Marking, Halting)>(&marks(7, 0), Ask::Open).err(),
+        Some(Refusal::of::<Halting>(STOPPED))
+    );
+    assert!(ask::<(Marking, Halting)>(&marks(7, 7), Ask::Open).is_ok());
+}
+
+#[test]
+fn an_exemption_from_one_role_leaves_the_other_s_rules_in_place() {
+    assert_eq!(
+        ask::<(Marking, Halting)>(&marks(0, 0), Ask::ExemptMarking).err(),
+        Some(Refusal::of::<Halting>(STOPPED))
+    );
+    assert_eq!(
+        ask::<(Marking, Halting)>(&marks(0, 0), Ask::ExemptHalting).err(),
+        Some(Refusal::of::<Marking>(HALTED))
+    );
+    assert!(ask::<(Marking, Halting)>(&marks(0, 7), Ask::ExemptMarking).is_ok());
+    assert!(ask::<(Marking, Halting)>(&marks(7, 0), Ask::ExemptHalting).is_ok());
+}
+
+#[test]
+fn a_role_s_rules_refuse_its_own_holder_too() {
+    assert_eq!(
+        ask_through_seat(KEY, &marks(0, 7), Ask::GatedMarking).err(),
+        Some(Refusal::of::<Marking>(HALTED))
+    );
+    assert!(ask_through_seat(KEY, &marks(7, 7), Ask::GatedMarking).is_ok());
+}
+
+#[test]
+fn a_role_s_rules_see_who_sent_a_message_through_its_seat() {
+    let mut held_by_other = marks(7, 7);
+    held_by_other.marking.authority_slot = held(OTHER);
+    assert_eq!(
+        ask_through_seat(OTHER, &held_by_other, Ask::GatedMarking).err(),
+        Some(Refusal::of::<Halting>(BARRED))
+    );
+    assert!(ask::<(Marking, Halting)>(&held_by_other, Ask::Open).is_ok());
 }

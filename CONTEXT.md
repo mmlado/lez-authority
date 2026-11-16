@@ -44,11 +44,11 @@ The first of a program's roles. Its install creates the config, and the guard's 
 _Avoid_: main role, primary role
 
 **Policy**:
-A role's rules: who may install its first holder, who may nominate, who may renounce, and what renounce leaves. A role that answers to nobody keeps the defaults. A role that answers to another, as a freeze authority answers to the admin, reads that role's slot.
+A role's rules: who may install its first holder, who may nominate, who may renounce, what renounce leaves, what the operations it defines for itself do, and whether a program message may run. A role that answers to nobody keeps the defaults. A role that answers to another, as a freeze authority answers to the admin, reads that role's slot.
 _Avoid_: permissions, access rules
 
 **Guard**:
-What runs in front of a program's handler: it forwards at seats, unwraps hops at the config, runs management operations, checks the holders a message declares, and refuses a handler that changed a slot. The guard attribute puts it there.
+What runs in front of a program's handler: it forwards at seats, unwraps hops at the config, runs management operations, checks the holders a message declares, asks each role whether a program message may run, and refuses a handler that changed a slot. The guard attribute puts it there.
 _Avoid_: dispatcher, framework, runtime
 
 **Plain handler**:
@@ -80,7 +80,7 @@ What a PDA nominee's accept carries: the seed that, with the program that reache
 _Avoid_: PDA claim
 
 **Open message**:
-A program message that needs no holder. It runs wherever it is sent, as in a program without the guard. At the config it needs an initialized config.
+A program message that needs no holder. It runs wherever it is sent, as in a program without the guard. At the config it needs an initialized config and the consent of each role it is not exempt from.
 _Avoid_: public message
 
 **Clearance**:
@@ -94,6 +94,10 @@ _Avoid_: protected, restricted, admin-only (that is the admin crate's case)
 **Config-only message**:
 A program message that only the config account may send, as it does to the program's other actors.
 _Avoid_: internal message, hub message
+
+**Exempt message**:
+A program message its program marked to run where one role's rules would refuse it, as an exempt message runs through a freeze. The mark names the role and covers that message only. It still needs its holders.
+_Avoid_: whitelisted message, carve-out
 
 **Hub**:
 The config account acting for the holder: the handler of a gated message sends to other actors of the program, after the guard verified the holder once.

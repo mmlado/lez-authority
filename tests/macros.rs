@@ -88,6 +88,14 @@ enum Message {
     },
     #[from_config]
     Mark,
+    #[exempt(Second)]
+    Exempt(u64),
+    #[only(First)]
+    #[exempt(Second)]
+    OnlyFirstExempt(u64),
+    #[from_config]
+    #[exempt(Second)]
+    MarkExempt,
 }
 
 /// The same enum, its `Gated` written by hand.
@@ -97,20 +105,30 @@ enum ByHand {
     OnlyFirst(u64),
     OnlySecond { value: u64 },
     Mark,
+    Exempt(u64),
+    OnlyFirstExempt(u64),
+    MarkExempt,
 }
 
 impl Gated for ByHand {
     fn needs<R: Role>(&self) -> bool {
         let role = TypeId::of::<R>();
         match self {
-            ByHand::OnlyFirst(_) => role == TypeId::of::<First>(),
+            ByHand::OnlyFirst(_) | ByHand::OnlyFirstExempt(_) => role == TypeId::of::<First>(),
             ByHand::OnlySecond { .. } => role == TypeId::of::<Second>(),
-            ByHand::Open(_) | ByHand::Mark => false,
+            ByHand::Open(_) | ByHand::Mark | ByHand::Exempt(_) | ByHand::MarkExempt => false,
         }
     }
 
     fn only_from_config(&self) -> bool {
-        matches!(self, ByHand::Mark)
+        matches!(self, ByHand::Mark | ByHand::MarkExempt)
+    }
+
+    fn exempt<R: Role>(&self) -> bool {
+        matches!(
+            self,
+            ByHand::Exempt(_) | ByHand::OnlyFirstExempt(_) | ByHand::MarkExempt
+        ) && TypeId::of::<R>() == TypeId::of::<Second>()
     }
 }
 
@@ -124,6 +142,9 @@ fn every_derived_message_declares_what_its_hand_written_twin_does() {
             ByHand::OnlySecond { value: 3 },
         ),
         (Message::Mark, ByHand::Mark),
+        (Message::Exempt(5), ByHand::Exempt(5)),
+        (Message::OnlyFirstExempt(6), ByHand::OnlyFirstExempt(6)),
+        (Message::MarkExempt, ByHand::MarkExempt),
     ];
     for (derived, by_hand) in &pairs {
         assert_eq!(
@@ -133,6 +154,8 @@ fn every_derived_message_declares_what_its_hand_written_twin_does() {
         assert_eq!(derived.needs::<First>(), by_hand.needs::<First>());
         assert_eq!(derived.needs::<Second>(), by_hand.needs::<Second>());
         assert_eq!(derived.only_from_config(), by_hand.only_from_config());
+        assert_eq!(derived.exempt::<First>(), by_hand.exempt::<First>());
+        assert_eq!(derived.exempt::<Second>(), by_hand.exempt::<Second>());
     }
 }
 
@@ -221,7 +244,7 @@ fn a_config_a_macro_writes_derives_its_slot() {
 /// The program's own code, shared by both handlers below.
 fn body(input: &ReceiveInput, message: Message) -> Response {
     let pre: &[u8] = &input.pre_state;
-    if let Message::Mark = message {
+    if let Message::Mark | Message::MarkExempt = message {
         return Response::set_state(vec![9]);
     }
     let mut config: Config = if pre.is_empty() {
@@ -230,10 +253,14 @@ fn body(input: &ReceiveInput, message: Message) -> Response {
         borsh::from_slice(pre).unwrap()
     };
     match message {
-        Message::Open(value) | Message::OnlyFirst(value) | Message::OnlySecond { value } => {
+        Message::Open(value)
+        | Message::OnlyFirst(value)
+        | Message::OnlySecond { value }
+        | Message::Exempt(value)
+        | Message::OnlyFirstExempt(value) => {
             config.value = value;
         }
-        Message::Mark => unreachable!(),
+        Message::Mark | Message::MarkExempt => unreachable!(),
     }
     Response::set_state(borsh::to_vec(&config).unwrap())
 }
