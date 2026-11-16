@@ -38,6 +38,20 @@ pub struct FreezeSlot {
     frozen_accounts: Vec<AccountId>,
 }
 
+impl FreezeSlot {
+    /// Whether the program is frozen.
+    #[must_use]
+    pub fn is_frozen(&self) -> bool {
+        self.frozen
+    }
+
+    /// The accounts frozen one by one, sorted.
+    #[must_use]
+    pub fn frozen_accounts(&self) -> &[AccountId] {
+        &self.frozen_accounts
+    }
+}
+
 impl Slot for FreezeSlot {
     fn authority_slot(&self) -> &AuthoritySlot {
         &self.authority_slot
@@ -54,17 +68,27 @@ impl Slot for FreezeSlot {
 pub enum FreezeError {
     /// The sender is neither the freeze authority nor the admin.
     NotAdminOrFreezeAuthority,
+    /// A freeze of a program that is frozen already.
+    AlreadyFrozen,
+    /// A release of a program that is not frozen.
+    NotFrozen,
 }
 
 impl FreezeError {
     /// Every refusal, for the table test.
-    pub const ALL: [Self; 1] = [Self::NotAdminOrFreezeAuthority];
+    pub const ALL: [Self; 3] = [
+        Self::NotAdminOrFreezeAuthority,
+        Self::AlreadyFrozen,
+        Self::NotFrozen,
+    ];
 
     /// The stable code. Append-only: a number is never reused or renumbered.
     #[must_use]
     pub const fn code(self) -> u16 {
         match self {
             Self::NotAdminOrFreezeAuthority => 208,
+            Self::AlreadyFrozen => 211,
+            Self::NotFrozen => 212,
         }
     }
 
@@ -75,6 +99,8 @@ impl FreezeError {
             Self::NotAdminOrFreezeAuthority => {
                 "the signing account is neither the freeze authority nor the admin"
             }
+            Self::AlreadyFrozen => "the program is already frozen",
+            Self::NotFrozen => "the program is not frozen",
         }
     }
 }
@@ -92,7 +118,8 @@ impl From<FreezeError> for AuthorityError {
 /// The freeze authority answers to the admin. Either of them nominates and renounces, and a
 /// renounce leaves the slot unset for the admin to fill again. Once the admin is renounced,
 /// nobody can nominate where the slot has no holder, so an emptied slot stays empty. An offer
-/// standing at that moment can still be accepted, and nobody can withdraw it.
+/// standing at that moment can still be accepted, and nobody can withdraw it. Only the freeze
+/// authority freezes and releases, and a freeze operation that would change nothing is refused.
 impl<C> Policy<C> for Freeze
 where
     C: HasSlot<Freeze> + HasSlot<Admin>,
@@ -109,6 +136,22 @@ where
 
     fn renounced() -> AuthoritySlot {
         AuthoritySlot::Unset
+    }
+
+    fn operate(ctx: &Ctx, config: &C, op: &[u8]) -> Result<FreezeSlot, Refusal> {
+        let op: FreezeOp = borsh::from_slice(op)
+            .map_err(|_| Refusal::of::<Freeze>(AuthorityError::MessageDoesNotDecode))?;
+        let slot = HasSlot::<Freeze>::slot(config);
+        ctx.check::<Freeze>(slot.authority_slot())?;
+        let refuse = |error: FreezeError| Err(Refusal::of::<Freeze>(error.into()));
+        let mut slot = slot.clone();
+        match op {
+            FreezeOp::Freeze if slot.frozen => return refuse(FreezeError::AlreadyFrozen),
+            FreezeOp::Release if !slot.frozen => return refuse(FreezeError::NotFrozen),
+            FreezeOp::Freeze => slot.frozen = true,
+            FreezeOp::Release => slot.frozen = false,
+        }
+        Ok(slot)
     }
 }
 
@@ -136,14 +179,32 @@ where
     ))
 }
 
-/// A client's message for one of the freeze role's management operations, nominate, accept or
-/// renounce, to send to the sender's own actor. The admin appoints, replaces and revokes the
-/// freeze authority with these, signing at its own seat, while `admin_op` acts on the admin's
-/// own slot. The freeze role's `Init` is refused (E137), and before the admin's `Init` every
-/// operation is (E101).
+/// A client's message for nominate, accept or renounce on the freeze role's slot, to send to the
+/// sender's own actor. The admin appoints, replaces and revokes the freeze authority with these,
+/// signing at its own seat, while `admin_op` acts on the admin's own slot. The freeze role's
+/// `Init` is refused (E137), and before the admin's `Init` every operation is (E101). Freeze and
+/// release go through [`freeze_op`].
 #[must_use]
 pub fn freeze_authority_op<M>(op: Op) -> Wire<M> {
     Wire::op::<Freeze>(op)
+}
+
+/// A freeze operation. Only the freeze authority sends one, through its own seat, and the guard
+/// runs it at the config.
+#[derive(BorshSerialize, BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FreezeOp {
+    /// Freezes the program. Refused with E211 when it is frozen already.
+    Freeze,
+    /// Releases the program. Refused with E212 when it is not frozen.
+    Release,
+}
+
+/// A client's message for a freeze operation, to send to the sender's own actor. Before the
+/// admin's `Init` it is refused (E101).
+#[must_use]
+pub fn freeze_op<M>(op: FreezeOp) -> Wire<M> {
+    let op = borsh::to_vec(&op).expect("a freeze operation encodes");
+    Wire::op::<Freeze>(Op::Own(op))
 }
 
 #[cfg(test)]

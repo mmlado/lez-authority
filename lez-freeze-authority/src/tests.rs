@@ -115,20 +115,46 @@ fn renounce() -> Wire<Message> {
     freeze_authority_op(Op::Renounce)
 }
 
+fn freeze() -> Wire<Message> {
+    freeze_op(FreezeOp::Freeze)
+}
+
+fn release() -> Wire<Message> {
+    freeze_op(FreezeOp::Release)
+}
+
+/// `config` with the program frozen.
+fn frozen(mut config: Config) -> Config {
+    config.freeze.frozen = true;
+    config
+}
+
 fn e208() -> Refusal {
     Refusal::of::<Freeze>(FreezeError::NotAdminOrFreezeAuthority.into())
 }
 
 #[test]
 fn the_freeze_codes_are_stable() {
-    let expected: [(FreezeError, u16); 1] = [(FreezeError::NotAdminOrFreezeAuthority, 208)];
+    let expected: [(FreezeError, u16); 3] = [
+        (FreezeError::NotAdminOrFreezeAuthority, 208),
+        (FreezeError::AlreadyFrozen, 211),
+        (FreezeError::NotFrozen, 212),
+    ];
     for (error, code) in expected {
         assert_eq!(error.code(), code, "{error:?}");
     }
-    assert_eq!(FreezeError::ALL.len(), expected.len());
+    assert_eq!(FreezeError::ALL, expected.map(|(error, _)| error));
     assert_eq!(
         e208().text(),
         "lez-freeze-authority/freeze E208: the signing account is neither the freeze authority nor the admin"
+    );
+    assert_eq!(
+        Refusal::of::<Freeze>(FreezeError::AlreadyFrozen.into()).text(),
+        "lez-freeze-authority/freeze E211: the program is already frozen"
+    );
+    assert_eq!(
+        Refusal::of::<Freeze>(FreezeError::NotFrozen.into()).text(),
+        "lez-freeze-authority/freeze E212: the program is not frozen"
     );
 }
 
@@ -403,22 +429,17 @@ fn a_pda_nominee_proves_itself_with_its_seed_and_then_acts_through_its_program()
 
 #[test]
 fn an_unsigned_sender_is_refused_at_its_seat_in_the_freeze_s_name() {
-    let refused = at(
-        Actor::new(AUTHORITY, PROGRAM),
-        None,
-        false,
-        None,
-        nominate(SUCCESSOR),
-    )
-    .err();
-    assert_eq!(
-        refused,
-        Some(Refusal::of::<Freeze>(AuthorityError::MissingSignature))
-    );
-    assert_eq!(
-        refused.unwrap().text(),
-        "lez-authority/freeze E104: the sender must authorize the change"
-    );
+    for message in [nominate(SUCCESSOR), freeze()] {
+        let refused = at(Actor::new(AUTHORITY, PROGRAM), None, false, None, message).err();
+        assert_eq!(
+            refused,
+            Some(Refusal::of::<Freeze>(AuthorityError::MissingSignature))
+        );
+        assert_eq!(
+            refused.unwrap().text(),
+            "lez-authority/freeze E104: the sender must authorize the change"
+        );
+    }
 }
 
 #[test]
@@ -470,32 +491,36 @@ fn the_zero_id_cancels_and_the_admin_s_nomination_replaces() {
 }
 
 #[test]
-fn a_freeze_operation_sent_straight_to_the_config_is_refused_in_the_freeze_s_name() {
-    let refused = at(
-        config_actor(),
-        None,
-        false,
-        Some(&config(holder(AUTHORITY))),
-        nominate(SUCCESSOR),
-    )
-    .err();
-    assert_eq!(
-        refused,
-        Some(Refusal::of::<Freeze>(AuthorityError::NotThroughSeat))
-    );
-    assert_eq!(
-        refused.unwrap().text(),
-        "lez-authority/freeze E122: a message that needs the freeze authority must go through the sender's own actor"
-    );
+fn an_operation_of_the_freeze_role_sent_straight_to_the_config_is_refused_in_its_name() {
+    for message in [nominate(SUCCESSOR), freeze()] {
+        let refused = at(
+            config_actor(),
+            None,
+            false,
+            Some(&config(holder(AUTHORITY))),
+            message,
+        )
+        .err();
+        assert_eq!(
+            refused,
+            Some(Refusal::of::<Freeze>(AuthorityError::NotThroughSeat))
+        );
+        assert_eq!(
+            refused.unwrap().text(),
+            "lez-authority/freeze E122: a message that needs the freeze authority must go through the sender's own actor"
+        );
+    }
 }
 
 #[test]
-fn before_the_admin_s_init_no_freeze_operation_runs() {
+fn before_the_admin_s_init_no_operation_of_the_freeze_role_runs() {
     for op in [
         nominate(AUTHORITY),
         freeze_authority_op(Op::Init),
         accept(),
         renounce(),
+        freeze(),
+        release(),
     ] {
         assert_eq!(
             send_via(ADMIN, None, None, op),
@@ -511,4 +536,178 @@ fn the_freeze_authority_can_replace_or_cancel_the_admin_s_nomination() {
     assert_eq!(replaced.freeze.authority_slot().nominee(), Some(STRANGER));
     let cancelled = send(AUTHORITY, &replaced, nominate(AccountId::default())).unwrap();
     assert_eq!(cancelled, config(holder(AUTHORITY)));
+}
+
+#[test]
+fn the_freeze_slot_reads_back_its_flag_and_its_accounts() {
+    for (frozen, frozen_accounts) in [
+        (false, vec![]),
+        (true, vec![]),
+        (false, vec![AUTHORITY, STRANGER]),
+        (true, vec![STRANGER]),
+    ] {
+        let slot = FreezeSlot {
+            authority_slot: AuthoritySlot::Unset,
+            frozen,
+            frozen_accounts: frozen_accounts.clone(),
+        };
+        assert_eq!(slot.is_frozen(), frozen);
+        assert_eq!(slot.frozen_accounts(), frozen_accounts);
+    }
+    let id = borsh::to_vec(&STRANGER).unwrap();
+    let decoded: FreezeSlot = borsh::from_slice(&[&[0, 0, 1, 0, 0, 0][..], &id].concat()).unwrap();
+    assert!(!decoded.is_frozen());
+    assert_eq!(decoded.frozen_accounts(), [STRANGER]);
+}
+
+#[test]
+fn a_freeze_operation_travels_as_the_freeze_role_s_own_operation() {
+    let role = borsh::to_vec("freeze").unwrap();
+    for (message, op) in [(freeze(), 0), (release(), 1)] {
+        let expected = [&[lez_authority::LIBRARY_TAG, 0][..], &role, &[4, op]].concat();
+        assert_eq!(borsh::to_vec(&message).unwrap(), expected);
+    }
+}
+
+#[test]
+fn the_freeze_authority_freezes_and_releases_the_program() {
+    let appointed = || {
+        let mut config = config(AuthoritySlot::Held {
+            holder: Holder {
+                account: AUTHORITY,
+                via: None,
+            },
+            nominee: Some(SUCCESSOR),
+        });
+        config.freeze.frozen_accounts = vec![STRANGER];
+        config
+    };
+    let frozen_program = send(AUTHORITY, &appointed(), freeze()).unwrap();
+    assert_eq!(frozen_program, frozen(appointed()));
+    assert!(frozen_program.freeze.is_frozen());
+    assert_eq!(send(AUTHORITY, &frozen_program, release()), Ok(appointed()));
+}
+
+#[test]
+fn only_the_freeze_authority_freezes_and_releases() {
+    let not_holder = Refusal::of::<Freeze>(AuthorityError::NotHolder);
+    let pending = || send(AUTHORITY, &config(holder(AUTHORITY)), nominate(SUCCESSOR)).unwrap();
+    for anyone in [ADMIN, STRANGER, SUCCESSOR] {
+        for pre in [pending(), frozen(pending())] {
+            for op in [freeze(), release()] {
+                assert_eq!(send(anyone, &pre, op), Err(not_holder.clone()));
+            }
+        }
+    }
+    assert_eq!(
+        not_holder.text(),
+        "lez-authority/freeze E103: the signing account is not the freeze authority"
+    );
+}
+
+#[test]
+fn with_no_freeze_authority_nobody_freezes_or_releases() {
+    let nobody = Refusal::of::<Freeze>(AuthorityError::NotInstalled);
+    for slot in [
+        AuthoritySlot::Unset,
+        AuthoritySlot::Offered { nominee: AUTHORITY },
+    ] {
+        for anyone in [ADMIN, AUTHORITY] {
+            for pre in [config(slot.clone()), frozen(config(slot.clone()))] {
+                for op in [freeze(), release()] {
+                    assert_eq!(send(anyone, &pre, op), Err(nobody.clone()));
+                }
+            }
+        }
+    }
+    assert_eq!(
+        nobody.text(),
+        "lez-authority/freeze E131: there is no freeze authority"
+    );
+}
+
+#[test]
+fn a_freeze_operation_that_changes_nothing_is_refused() {
+    assert_eq!(
+        send(AUTHORITY, &frozen(config(holder(AUTHORITY))), freeze()),
+        Err(Refusal::of::<Freeze>(FreezeError::AlreadyFrozen.into()))
+    );
+    assert_eq!(
+        send(AUTHORITY, &config(holder(AUTHORITY)), release()),
+        Err(Refusal::of::<Freeze>(FreezeError::NotFrozen.into()))
+    );
+}
+
+#[test]
+fn a_freeze_outlasts_its_freeze_authority_until_the_next_one_releases_it() {
+    let frozen_program = send(AUTHORITY, &config(holder(AUTHORITY)), freeze()).unwrap();
+    let stepped_down = send(AUTHORITY, &frozen_program, renounce()).unwrap();
+    assert_eq!(stepped_down, frozen(config(AuthoritySlot::Unset)));
+    assert_eq!(
+        send(AUTHORITY, &stepped_down, release()),
+        Err(Refusal::of::<Freeze>(AuthorityError::NotInstalled))
+    );
+    let offered = send(ADMIN, &stepped_down, nominate(SUCCESSOR)).unwrap();
+    let appointed = send(SUCCESSOR, &offered, accept()).unwrap();
+    assert_eq!(appointed, frozen(config(holder(SUCCESSOR))));
+    assert_eq!(
+        send(SUCCESSOR, &appointed, release()),
+        Ok(config(holder(SUCCESSOR)))
+    );
+}
+
+#[test]
+fn a_pda_freeze_authority_freezes_and_releases_through_its_program_only() {
+    let pda = AccountId::for_public_pda(&GOVERNANCE, &PdaSeed::new([9; 32]));
+    let governed = || {
+        config(AuthoritySlot::held(Holder {
+            account: pda,
+            via: Some(GOVERNANCE),
+        }))
+    };
+    let frozen_program = send_via(pda, Some(GOVERNANCE), Some(&governed()), freeze()).unwrap();
+    assert_eq!(frozen_program, frozen(governed()));
+    for via in [None, Some(ELSEWHERE)] {
+        assert_eq!(
+            send_via(pda, via, Some(&frozen_program), release()),
+            Err(Refusal::of::<Freeze>(AuthorityError::ViaNotAllowed))
+        );
+    }
+    assert_eq!(
+        send_via(pda, Some(GOVERNANCE), Some(&frozen_program), release()),
+        Ok(governed())
+    );
+}
+
+#[test]
+fn a_freeze_operation_that_does_not_decode_is_refused_in_the_freeze_s_name() {
+    for sender in [AUTHORITY, STRANGER] {
+        for bytes in [Vec::new(), vec![9], vec![0, 0]] {
+            assert_eq!(
+                send(
+                    sender,
+                    &config(holder(AUTHORITY)),
+                    freeze_authority_op(Op::Own(bytes))
+                ),
+                Err(Refusal::of::<Freeze>(AuthorityError::MessageDoesNotDecode))
+            );
+        }
+    }
+}
+
+#[test]
+fn a_freeze_standing_when_the_admin_renounces_is_released_by_the_freeze_authority() {
+    let without_admin = |freeze| Config {
+        admin: AuthoritySlot::Renounced,
+        ..config(freeze)
+    };
+    let frozen_program = frozen(config(holder(AUTHORITY)));
+    let renounced = send(ADMIN, &frozen_program, admin_op(Op::Renounce)).unwrap();
+    assert_eq!(renounced, frozen(without_admin(holder(AUTHORITY))));
+    let released = send(AUTHORITY, &renounced, release()).unwrap();
+    assert_eq!(released, without_admin(holder(AUTHORITY)));
+    assert_eq!(
+        send(AUTHORITY, &released, freeze()),
+        Ok(frozen(without_admin(holder(AUTHORITY))))
+    );
 }
