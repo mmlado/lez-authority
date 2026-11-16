@@ -22,7 +22,8 @@
 //! Each keeps its own slot in the config. The first creates the config.
 //!
 //! This crate is policy-free. Which role a slot plays comes from the consumer through
-//! [`Role`], and who may install, nominate and renounce through [`Policy`].
+//! [`Role`], and who may install, nominate and renounce, and what a role's own operations do,
+//! through [`Policy`].
 
 #![warn(missing_docs)]
 
@@ -51,7 +52,8 @@ pub enum AuthorityError {
     NotInitialized,
     /// The config account holds bytes that do not decode as the config.
     ConfigDoesNotDecode,
-    /// A message does not encode or decode, or names a role the program does not have.
+    /// A message does not encode or decode, names a role the program does not have, or is an
+    /// operation its role does not define.
     MessageDoesNotDecode,
     /// The sender did not authorize the transaction at its own actor.
     MissingSignature,
@@ -399,10 +401,11 @@ pub trait HasSlot<R: Role> {
     fn slot_mut(&mut self) -> &mut R::Slot;
 }
 
-/// Who may install, nominate and renounce role `Self` in a config `C`. Every method holds
-/// the rule of a role that answers to nobody else, so such a role implements it empty. A
-/// role that answers to another, as a freeze authority answers to the admin, overrides the
-/// rules that differ and reads the other role's slot through `C`.
+/// Who may install, nominate and renounce role `Self` in a config `C`, and what the operations
+/// it defines for itself do. Every method holds the rule of a role that answers to nobody else
+/// and defines no operations of its own, so such a role implements it empty. A role that
+/// answers to another, as a freeze authority answers to the admin, overrides the rules that
+/// differ and reads the other role's slot through `C`.
 pub trait Policy<C>: Role + Sized
 where
     C: HasSlot<Self>,
@@ -539,6 +542,19 @@ where
     fn renounced() -> AuthoritySlot {
         AuthoritySlot::Renounced
     }
+
+    /// Runs one of the operations the role defines for itself, from the bytes of
+    /// [`Op::Own`], and returns the role's slot as the operation leaves it. The guard checks no
+    /// holder first, so the role's rules say who may send each operation. The guard writes back
+    /// that slot alone and keeps its holder part as it was: the holder moves only through
+    /// `Init`, `Nominate`, `Accept` and `Renounce`. By default the role defines none, and the
+    /// operation is refused as a message that does not decode.
+    ///
+    /// # Errors
+    /// The refusal that stops the operation.
+    fn operate(_ctx: &Ctx, _config: &C, _op: &[u8]) -> Result<Self::Slot, Refusal> {
+        Err(Refusal::of::<Self>(AuthorityError::MessageDoesNotDecode))
+    }
 }
 
 /// Who may install the first holder.
@@ -552,8 +568,10 @@ pub enum InitGate {
 }
 
 /// A management operation on a role's slot. A client sends it as a library message, the
-/// guard runs it under the role's [`Policy`], and the handler never sees it.
-#[derive(BorshSerialize, BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
+/// guard runs it under the role's [`Policy`], and the handler never sees it. Its encoding is
+/// Borsh's, except that the bytes of [`Op::Own`] carry no length and run to the end of the
+/// message, so an `Op` is always the last thing in one.
+#[derive(BorshSerialize, BorshDeserialize, Clone, Debug, PartialEq, Eq)]
 pub enum Op {
     /// Makes the sender the holder of a slot that has none. A standing offer stays.
     Init,
@@ -572,6 +590,31 @@ pub enum Op {
     /// Gives the role up, nominee included. By default the sender must be the holder, and the
     /// holder part stays renounced for good. Whatever else the role keeps in its slot stays.
     Renounce,
+    /// One of the operations the role defines for itself, such as a freeze, encoded as the
+    /// role encodes it. [`Policy::operate`] runs it.
+    Own(
+        // A length in front would hide the role's type from an IDL, so the bytes run to the end.
+        #[borsh(
+            serialize_with = "rest::serialize",
+            deserialize_with = "rest::deserialize"
+        )]
+        Vec<u8>,
+    ),
+}
+
+/// The bytes of [`Op::Own`], to the end of the message.
+mod rest {
+    use std::io::{Read, Result, Write};
+
+    pub fn serialize<W: Write>(bytes: &[u8], writer: &mut W) -> Result<()> {
+        writer.write_all(bytes)
+    }
+
+    pub fn deserialize<R: Read>(reader: &mut R) -> Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes)?;
+        Ok(bytes)
+    }
 }
 
 /// A message the sender's own actor forwarded to the config, naming the program that
@@ -788,6 +831,13 @@ where
         Op::Renounce => {
             R::may_renounce(ctx, config)?;
             *HasSlot::<R>::slot_mut(config).authority_slot_mut() = R::renounced();
+        }
+        Op::Own(op) => {
+            let holder = HasSlot::<R>::slot(config).authority_slot().clone();
+            let mut slot = R::operate(ctx, config, &op)?;
+            // The holder moves only through the four operations above, whatever the role returns.
+            *slot.authority_slot_mut() = holder;
+            *HasSlot::<R>::slot_mut(config) = slot;
         }
     }
     Ok(())
