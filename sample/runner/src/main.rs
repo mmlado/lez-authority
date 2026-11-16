@@ -1,17 +1,24 @@
 //! Drives the token sample on a local sequencer and reads the state back after each step: the
-//! admin's `Init`, a mint, the freeze authority appointed, replaced and revoked, a second mint,
-//! the freeze authority appointed again, and a mint by the admin to itself.
+//! admin's `Init`, a mint, the freeze authority appointed, replaced and revoked, a freeze with
+//! no freeze authority refused, a second mint, the freeze authority appointed again, and a mint
+//! by the admin to itself. Then the freeze: the freeze authority freezes the program, a mint is
+//! refused, the admin's notice runs through the freeze, the admin replaces the freeze authority
+//! while frozen, the successor releases, and the admin clears the notice and mints again.
 //!
 //! Usage: sample-runner <sample.bin> <payer account id>
 
 use anyhow::{Context, Result, anyhow};
 use lee_core::account::{AccountId, Actor};
-use lez_freeze_authority::{AuthoritySlot, Holder, Op, Slot, Wire, admin_op, freeze_authority_op};
+use lez_freeze_authority::{
+    AuthoritySlot, FreezeOp, Holder, Op, Slot, Wire, admin_op, freeze_authority_op, freeze_op,
+};
 use sample_core::{Balance, CONFIG_SEED, Config, Message, config_account};
 use wallet::{
     AccountIdentity, AccountMention, DeclaredFee, ExecutionFailureKind, WalletCore,
     WalletSequencerClient, program_facades::program_loader::ProgramLoader,
 };
+
+const NOTICE: &str = "frozen for review";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -71,6 +78,9 @@ async fn main() -> Result<()> {
     let mint = |to: AccountId, amount: u64| Message::Mint { to, amount }.into();
     let nominate = |next: AccountId| freeze_authority_op(Op::Nominate { next });
     let accept = || freeze_authority_op(Op::Accept { pda_seed: None });
+    let freeze = || freeze_op(FreezeOp::Freeze);
+    let release = || freeze_op(FreezeOp::Release);
+    let notice = |text: &str| -> Wire<Message> { Message::SetNotice(text.to_owned()).into() };
 
     // The deployer is the program's own account, so the admin's gate lets it through.
     call(&wallet, payer, send(deployer), &admin_op(Op::Init), "init").await?;
@@ -180,7 +190,7 @@ async fn main() -> Result<()> {
         },
         nominee: Some(successor),
     };
-    let expected = with_freeze(deployer, offered);
+    let expected = with_freeze(deployer, offered.clone());
     check(
         &wallet,
         program,
@@ -220,6 +230,16 @@ async fn main() -> Result<()> {
         &nominate(stranger),
         "lez-freeze-authority/freeze E208:",
         "the revoked freeze authority's nomination",
+    )
+    .await?;
+    check(&wallet, program, &expected, "after it, unchanged").await?;
+    refused(
+        &mut wallet,
+        payer,
+        send(successor),
+        &freeze(),
+        "lez-authority/freeze E131:",
+        "a freeze with no freeze authority",
     )
     .await?;
     check(&wallet, program, &expected, "after it, unchanged").await?;
@@ -268,6 +288,129 @@ async fn main() -> Result<()> {
         deployer,
         2,
         "after the admin's mint to itself",
+    )
+    .await?;
+
+    refused(
+        &mut wallet,
+        payer,
+        send(deployer),
+        &freeze(),
+        "lez-authority/freeze E103:",
+        "the admin's freeze",
+    )
+    .await?;
+    check(&wallet, program, &expected, "after it, unchanged").await?;
+    call(&wallet, payer, send(authority), &freeze(), "freeze").await?;
+    check_frozen(&wallet, program, &expected, "after the freeze").await?;
+    refused(
+        &mut wallet,
+        payer,
+        to_owner(deployer, authority),
+        &mint(authority, 1),
+        "lez-freeze-authority/freeze E217:",
+        "a mint while frozen",
+    )
+    .await?;
+    check_balance(&wallet, program, authority, 8, "after it, unchanged").await?;
+    refused(
+        &mut wallet,
+        payer,
+        send(stranger),
+        &notice(NOTICE),
+        "lez-authority/admin E103:",
+        "a stranger's notice while frozen",
+    )
+    .await?;
+    check_frozen(&wallet, program, &expected, "after it, unchanged").await?;
+    call(
+        &wallet,
+        payer,
+        send(deployer),
+        &notice(NOTICE),
+        "the admin's notice while frozen",
+    )
+    .await?;
+    let expected = Config {
+        notice: NOTICE.to_owned(),
+        ..expected
+    };
+    check_frozen(&wallet, program, &expected, "after the notice").await?;
+
+    call(
+        &wallet,
+        payer,
+        send(deployer),
+        &nominate(successor),
+        "replace while frozen",
+    )
+    .await?;
+    let expected = Config {
+        notice: NOTICE.to_owned(),
+        ..with_freeze(deployer, offered)
+    };
+    check_frozen(
+        &wallet,
+        program,
+        &expected,
+        "after the admin's offer while frozen",
+    )
+    .await?;
+    call(
+        &wallet,
+        payer,
+        send(successor),
+        &accept(),
+        "the successor's accept while frozen",
+    )
+    .await?;
+    let expected = Config {
+        notice: NOTICE.to_owned(),
+        ..with_freeze(deployer, held(successor))
+    };
+    check_frozen(
+        &wallet,
+        program,
+        &expected,
+        "after the replacement while frozen",
+    )
+    .await?;
+    refused(
+        &mut wallet,
+        payer,
+        send(authority),
+        &release(),
+        "lez-authority/freeze E103:",
+        "the replaced freeze authority's release",
+    )
+    .await?;
+    check_frozen(&wallet, program, &expected, "after it, unchanged").await?;
+    call(&wallet, payer, send(successor), &release(), "release").await?;
+    check(&wallet, program, &expected, "after the release").await?;
+    call(
+        &wallet,
+        payer,
+        send(deployer),
+        &notice(""),
+        "the admin clears the notice",
+    )
+    .await?;
+    let expected = with_freeze(deployer, held(successor));
+    check(&wallet, program, &expected, "after the notice is cleared").await?;
+    call(
+        &wallet,
+        payer,
+        to_owner(deployer, authority),
+        &mint(authority, 1),
+        "a mint after the release",
+    )
+    .await?;
+    check_balance(
+        &wallet,
+        program,
+        authority,
+        9,
+        "after the mint after the release",
     )
     .await?;
 
@@ -380,15 +523,13 @@ async fn check_balance<C: WalletSequencerClient>(
     Ok(())
 }
 
-/// Reads the config back and compares it with what the step should have left.
-async fn check<C: WalletSequencerClient>(
+/// The config as the chain holds it, if the account holds any.
+async fn read_config<C: WalletSequencerClient>(
     wallet: &WalletCore<C>,
     program: AccountId,
-    expected: &Config,
-    when: &str,
-) -> Result<()> {
+) -> Result<Option<Config>> {
     let actor = Actor::new(config_account(program), program);
-    let found: Option<Config> = match wallet.get_account_view(actor).await? {
+    Ok(match wallet.get_account_view(actor).await? {
         None => None,
         Some(account) => {
             let state: &[u8] = account.data.actor_state(program);
@@ -398,10 +539,45 @@ async fn check<C: WalletSequencerClient>(
                 Some(borsh::from_slice(state).context("the config does not decode")?)
             }
         }
-    };
+    })
+}
+
+/// Reads the config back and compares it with what the step should have left.
+async fn check<C: WalletSequencerClient>(
+    wallet: &WalletCore<C>,
+    program: AccountId,
+    expected: &Config,
+    when: &str,
+) -> Result<()> {
+    let found = read_config(wallet, program).await?;
     println!("{when}: {found:?}");
     if found.as_ref() != Some(expected) {
         return Err(anyhow!("{when}: expected {expected:?}"));
+    }
+    Ok(())
+}
+
+/// [`check`] for a frozen program. A client reads the freeze flag but cannot set it, so the
+/// freeze slot is compared part by part.
+async fn check_frozen<C: WalletSequencerClient>(
+    wallet: &WalletCore<C>,
+    program: AccountId,
+    expected: &Config,
+    when: &str,
+) -> Result<()> {
+    let found = read_config(wallet, program).await?;
+    println!("{when}: {found:?}");
+    let matches = found.as_ref().is_some_and(|found| {
+        found.freeze.is_frozen()
+            && found.freeze.authority_slot() == expected.freeze.authority_slot()
+            && found.freeze.frozen_accounts() == expected.freeze.frozen_accounts()
+            && Config {
+                freeze: expected.freeze.clone(),
+                ..found.clone()
+            } == *expected
+    });
+    if !matches {
+        return Err(anyhow!("{when}: expected {expected:?}, frozen"));
     }
     Ok(())
 }

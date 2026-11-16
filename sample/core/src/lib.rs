@@ -14,13 +14,21 @@ pub fn config_account(program: AccountId) -> AccountId {
     lez_freeze_authority::config_account(program, &CONFIG_SEED)
 }
 
-/// The state kept on the config account: the admin's slot and the freeze authority's.
+/// The longest notice, in bytes. Every message at the config reads the notice, so it stays
+/// short.
+pub const NOTICE_MAX: usize = 64;
+
+/// The state kept on the config account: the admin's slot, the freeze authority's, and the
+/// admin's notice.
 #[derive(Debug, Clone, Default, PartialEq, Eq, BorshSerialize, BorshDeserialize, HasSlot)]
 pub struct Config {
     #[slot(Admin)]
     pub admin: AuthoritySlot,
     #[slot(Freeze)]
     pub freeze: FreezeSlot,
+    /// What the admin last posted, such as why the program is frozen, at most [`NOTICE_MAX`]
+    /// bytes.
+    pub notice: String,
 }
 
 /// The state the program keeps at an owner's own actor.
@@ -30,7 +38,7 @@ pub struct Balance {
 }
 
 /// The messages the program accepts. The admin's and the freeze authority's operations are not
-/// among them: a client sends those with `admin_op` and `freeze_authority_op`.
+/// among them: a client sends those with `admin_op`, `freeze_authority_op` and `freeze_op`.
 #[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize, Gated)]
 pub enum Message {
     /// The admin mints `amount` to `to`. The config credits `to`'s own actor.
@@ -39,4 +47,9 @@ pub enum Message {
     /// What an owner's actor receives from the config. Nobody else may send it.
     #[from_config]
     Credit(u64),
+    /// The admin posts a notice on the config. A freeze lets it through, so the admin can say
+    /// why the program is frozen.
+    #[only(Admin)]
+    #[exempt(Freeze)]
+    SetNotice(String),
 }
