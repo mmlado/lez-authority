@@ -4,7 +4,11 @@ version = "0.0.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 publish = false
-description = "A build script that reaches the engine only through a role crate in its build-dependencies"
+description = "A build script away from build.rs that reaches the engine under another name, beside a lib that reaches it through a role crate"
+build = "build/gen-messages.rs"
+
+[dependencies]
+lez-sample-authority = { path = "../lez-sample-authority" }
 
 [build-dependencies]
-lez-sample-authority = { path = "../lez-sample-authority" }
+engine = { package = "lez-authority", path = "../.." }

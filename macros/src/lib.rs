@@ -83,20 +83,46 @@ pub fn derive_gated(input: TokenStream) -> TokenStream {
 
 /// The path to lez-authority from the program's crate.
 fn krate() -> syn::Result<TokenStream2> {
-    // A build script links its build-dependencies, not the package's own.
-    let kinds: &[&str] = if std::env::var("CARGO_CRATE_NAME").as_deref() == Ok("build_script_build")
-    {
-        &["build-dependencies"]
-    } else {
-        &["dependencies", "dev-dependencies"]
-    };
     let Some((manifest, program, workspace)) = read_manifests() else {
         return Ok(quote!(::lez_authority));
     };
+    let crate_name = std::env::var("CARGO_CRATE_NAME").unwrap_or_default();
+    let kinds = kinds(&crate_name, &program);
     let Some(found) = candidates(&program, workspace.as_deref(), kinds) else {
         return Ok(quote!(::lez_authority));
     };
     path_to_engine(&found, &manifest)
+}
+
+/// The dependency tables a build script links.
+const BUILD_SCRIPT: &[&str] = &["build-dependencies"];
+
+/// The dependency tables the package's other targets link.
+const PACKAGE: &[&str] = &["dependencies", "dev-dependencies"];
+
+/// The dependency tables the crate being compiled links, from its name and the package's
+/// `build` key.
+fn kinds(crate_name: &str, program: &str) -> &'static [&'static str] {
+    let build = program
+        .parse::<toml_edit::DocumentMut>()
+        .ok()
+        .and_then(|program| program.get("package")?.get("build").cloned());
+    let script = match build
+        .as_ref()
+        .map(|build| (build.as_str(), build.as_bool()))
+    {
+        Some((Some(path), _)) => Some(path),
+        Some((None, Some(false))) => None,
+        _ => Some("build.rs"),
+    };
+    // Cargo names a build script's crate after its file, dashes as underscores.
+    let stem = script.and_then(|path| std::path::Path::new(path).file_stem()?.to_str());
+    match stem {
+        Some(stem) if crate_name == format!("build_script_{}", stem.replace('-', "_")) => {
+            BUILD_SCRIPT
+        }
+        _ => PACKAGE,
+    }
 }
 
 /// What the lookup found among the program's dependencies.
@@ -552,9 +578,6 @@ mod tests {
         }
     }
 
-    /// The kinds of dependency a program's own code links.
-    const PROGRAM: &[&str] = &["dependencies", "dev-dependencies"];
-
     /// The candidates as `package`, or `package as key` for a renamed one.
     fn listed(found: &Found) -> Vec<String> {
         found
@@ -603,7 +626,7 @@ mod tests {
             [workspace.dependencies]
             adm = { package = "lez-admin-authority", path = "../admin" }
         "#;
-        let found = candidates(program, Some(workspace), PROGRAM).unwrap();
+        let found = candidates(program, Some(workspace), PACKAGE).unwrap();
         assert_eq!(
             listed(&found),
             [
@@ -623,40 +646,54 @@ mod tests {
     fn an_inherited_dependency_is_named_by_the_workspace_root() {
         let program = "[dependencies]\nadm.workspace = true\n";
         let workspace = "[workspace.dependencies]\nadm = { package = \"lez-admin-authority\", path = \"../admin\" }\n";
-        let found = candidates(program, Some(workspace), PROGRAM).unwrap();
+        let found = candidates(program, Some(workspace), PACKAGE).unwrap();
         assert_eq!(listed(&found), ["lez-admin-authority as adm"]);
-        let rootless = candidates(program, None, PROGRAM).unwrap();
+        let rootless = candidates(program, None, PACKAGE).unwrap();
         assert!(rootless.candidates.is_empty() && rootless.unresolved);
-        assert!(candidates("not toml [", None, PROGRAM).is_none());
+        assert!(candidates("not toml [", None, PACKAGE).is_none());
     }
 
     #[test]
     fn inside_the_engine_the_engine_is_the_only_candidate() {
         let engine = "[package]\nname = \"lez-authority\"\n[dependencies]\nlez-authority-macros = { path = \"macros\" }\n";
         assert_eq!(
-            listed(&candidates(engine, None, PROGRAM).unwrap()),
+            listed(&candidates(engine, None, PACKAGE).unwrap()),
             ["lez-authority"]
         );
     }
 
     #[test]
     fn a_build_script_looks_in_its_build_dependencies() {
-        let program = "[dependencies]\nlez-freeze-authority = \"0.1\"\n[build-dependencies]\ngen = { package = \"lez-admin-authority\", version = \"0.3\" }\n";
+        let program = "[package]\nname = \"program\"\n[dependencies]\nlez-freeze-authority = \"0.1\"\n[build-dependencies]\ngen = { package = \"lez-admin-authority\", version = \"0.3\" }\n";
+        let listed_for = |crate_name: &str| {
+            listed(&candidates(program, None, kinds(crate_name, program)).unwrap())
+        };
         assert_eq!(
-            listed(&candidates(program, None, &["build-dependencies"]).unwrap()),
+            listed_for("build_script_build"),
             ["lez-admin-authority as gen"]
         );
-        assert_eq!(
-            listed(&candidates(program, None, PROGRAM).unwrap()),
-            ["lez-freeze-authority"]
-        );
+        assert_eq!(listed_for("program"), ["lez-freeze-authority"]);
+    }
+
+    #[test]
+    fn a_build_script_is_named_after_its_file() {
+        let default = "[package]\nname = \"program\"\n";
+        let on = "[package]\nname = \"program\"\nbuild = true\n";
+        let moved = "[package]\nname = \"program\"\nbuild = \"build/gen-messages.rs\"\n";
+        let off = "[package]\nname = \"program\"\nbuild = false\n";
+        assert_eq!(kinds("build_script_build", default), BUILD_SCRIPT);
+        assert_eq!(kinds("build_script_build", on), BUILD_SCRIPT);
+        assert_eq!(kinds("build_script_gen_messages", moved), BUILD_SCRIPT);
+        assert_eq!(kinds("build_script_build", moved), PACKAGE);
+        assert_eq!(kinds("build_script_build", off), PACKAGE);
+        assert_eq!(kinds("program", default), PACKAGE);
     }
 
     #[test]
     fn the_engine_comes_first_within_its_tier() {
         let program = "[dependencies]\nlez-admin-authority = \"0.3\"\nlez-authority = \"0.3\"\n";
         assert_eq!(
-            listed(&candidates(program, None, PROGRAM).unwrap()),
+            listed(&candidates(program, None, PACKAGE).unwrap()),
             ["lez-authority", "lez-admin-authority"]
         );
     }

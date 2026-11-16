@@ -1,4 +1,4 @@
-use lez_sample_authority::Gated;
+use engine::Gated;
 
 #[derive(Gated)]
 enum Message {

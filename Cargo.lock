@@ -1403,6 +1403,7 @@ dependencies = [
 name = "program-build-script"
 version = "0.0.0"
 dependencies = [
+ "lez-authority",
  "lez-sample-authority",
 ]
 
