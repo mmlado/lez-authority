@@ -2,7 +2,6 @@
 //! hand-written twins do, and a handler under the attribute answers every input as the hand
 //! expansion does, refusals included.
 
-use std::any::TypeId;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -114,11 +113,12 @@ enum ByHand {
 }
 
 impl Gated for ByHand {
+    const MARKED: &'static [&'static str] = &[First::NAME, Second::NAME];
+
     fn needs<R: Role>(&self) -> bool {
-        let role = TypeId::of::<R>();
         match self {
-            ByHand::OnlyFirst(_) | ByHand::OnlyFirstExempt(_) => role == TypeId::of::<First>(),
-            ByHand::OnlySecond { .. } => role == TypeId::of::<Second>(),
+            ByHand::OnlyFirst(_) | ByHand::OnlyFirstExempt(_) => R::NAME == First::NAME,
+            ByHand::OnlySecond { .. } => R::NAME == Second::NAME,
             ByHand::Open(_) | ByHand::Mark | ByHand::Exempt(_) | ByHand::MarkExempt => false,
         }
     }
@@ -131,7 +131,7 @@ impl Gated for ByHand {
         matches!(
             self,
             ByHand::Exempt(_) | ByHand::OnlyFirstExempt(_) | ByHand::MarkExempt
-        ) && TypeId::of::<R>() == TypeId::of::<Second>()
+        ) && R::NAME == Second::NAME
     }
 }
 
@@ -149,6 +149,7 @@ fn every_derived_message_declares_what_its_hand_written_twin_does() {
         (Message::OnlyFirstExempt(6), ByHand::OnlyFirstExempt(6)),
         (Message::MarkExempt, ByHand::MarkExempt),
     ];
+    assert_eq!(<Message as Gated>::MARKED, <ByHand as Gated>::MARKED);
     for (derived, by_hand) in &pairs {
         assert_eq!(
             borsh::to_vec(derived).unwrap(),
@@ -170,6 +171,83 @@ fn the_derive_names_each_marked_role_once_for_the_guard_to_check() {
         assert!(!<(First,) as Roles<Config, Message>>::MARKS_LISTED);
         assert!(!<(First, Third) as Roles<Mixed, Message>>::MARKS_LISTED);
     }
+}
+
+#[derive(Gated)]
+#[allow(dead_code)]
+enum ExemptOnly {
+    #[exempt(Second)]
+    Set,
+}
+
+#[test]
+fn a_role_named_only_by_an_exemption_is_marked_too() {
+    assert_eq!(<ExemptOnly as Gated>::MARKED, [Second::NAME]);
+    const {
+        assert!(!<(First,) as Roles<Config, ExemptOnly>>::MARKS_LISTED);
+    }
+}
+
+// A second type under each listed role's name, as a role crate linked twice gives a program.
+mod copy {
+    use lez_authority::{AuthoritySlot, Role};
+
+    pub struct First;
+
+    impl Role for First {
+        const NAME: &'static str = "first";
+        type Slot = AuthoritySlot;
+    }
+
+    pub struct Second;
+
+    impl Role for Second {
+        const NAME: &'static str = "second";
+        type Slot = AuthoritySlot;
+    }
+}
+
+#[derive(BorshSerialize, BorshDeserialize, Gated)]
+enum Copied {
+    #[only(copy::First)]
+    #[exempt(copy::Second)]
+    SetValue(u64),
+}
+
+#[test]
+fn a_role_linked_twice_is_one_role_to_the_guard() {
+    assert!(Copied::SetValue(5).needs::<First>());
+    assert!(Copied::SetValue(5).exempt::<Second>());
+    let message = Wire::Program(Copied::SetValue(5));
+    let held = Config {
+        first: AuthoritySlot::held(Holder {
+            account: KEY,
+            via: None,
+        }),
+        ..Config::default()
+    };
+    let straight = ReceiveInput {
+        receiver: Actor::new(config_account(PROGRAM, &SEED), PROGRAM),
+        from: None,
+        is_authorized: false,
+        pre_state: ActorState::from(borsh::to_vec(&held).unwrap()),
+        message: borsh::to_vec(&message).unwrap(),
+    };
+    let refused = lez_authority::try_guard::<(First, Second), Config, Copied>(
+        &straight,
+        &SEED,
+        InitGate::Deployer,
+        message,
+        |_, _| Response::keep_state(),
+    )
+    .err()
+    .map(|refusal| refusal.text());
+    assert_eq!(
+        refused.as_deref(),
+        Some(
+            "lez-authority/first E122: a message that needs the first must go through the sender's own actor"
+        )
+    );
 }
 
 // A program's own items named like the derive's internals, and a role that is the enum's own.

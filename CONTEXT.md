@@ -37,7 +37,7 @@ One role's place in the config: its holder, and whatever else the role keeps the
 _Avoid_: authority config, admin config, role state
 
 **Role**:
-What a slot stands for, such as admin. Names the slot in refusals. A program may have more than one, each with its own slot.
+What a slot stands for, such as admin. Names the slot in refusals. A program may have more than one, each with its own name and slot.
 
 **Root role**:
 The first of a program's roles. Its install creates the config, and the guard's own refusals name it.

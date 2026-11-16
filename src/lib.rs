@@ -382,7 +382,58 @@ impl Slot for AuthoritySlot {
 /// A role a slot plays, such as admin. Names the slot in panic text.
 pub trait Role: 'static {
     /// The role's name, as it appears in a refusal's prefix and in a client's operation
-    /// message.
+    /// message. The guard knows a role by it, so a program's roles need a name each, and a
+    /// guard over two roles of one name does not compile:
+    ///
+    /// ```compile_fail,E0080
+    /// use borsh::{BorshDeserialize, BorshSerialize};
+    /// use lee_core::program::{ReceiveInput, Response};
+    /// use lez_authority::{AuthoritySlot, Gated, HasSlot, InitGate, Policy, Role, Wire};
+    ///
+    /// struct Owner;
+    ///
+    /// impl Role for Owner {
+    ///     const NAME: &'static str = "owner";
+    ///     type Slot = AuthoritySlot;
+    /// }
+    ///
+    /// impl<C: HasSlot<Owner>> Policy<C> for Owner {}
+    ///
+    /// struct Guardian;
+    ///
+    /// impl Role for Guardian {
+    ///     const NAME: &'static str = "owner";
+    ///     type Slot = AuthoritySlot;
+    /// }
+    ///
+    /// impl<C: HasSlot<Guardian>> Policy<C> for Guardian {}
+    ///
+    /// #[derive(Default, BorshSerialize, BorshDeserialize, HasSlot)]
+    /// struct Config {
+    ///     #[slot(Owner)]
+    ///     owner: AuthoritySlot,
+    ///     #[slot(Guardian)]
+    ///     guardian: AuthoritySlot,
+    /// }
+    ///
+    /// #[derive(BorshSerialize, BorshDeserialize, Gated)]
+    /// enum Message {
+    ///     Ping,
+    /// }
+    ///
+    /// fn handle(input: &ReceiveInput, message: Wire<Message>) -> Response {
+    ///     let seed = lez_authority::seed(b"one-name");
+    ///     lez_authority::guard::<(Owner, Guardian), Config, Message>(
+    ///         input,
+    ///         &seed,
+    ///         InitGate::Deployer,
+    ///         message,
+    ///         |_, _| Response::keep_state(),
+    ///     )
+    /// }
+    ///
+    /// let _reified: fn(&ReceiveInput, Wire<Message>) -> Response = handle;
+    /// ```
     const NAME: &'static str;
     /// The role's name in a refusal's sentence, such as "freeze authority" for the role named
     /// "freeze". By default its name.
@@ -712,7 +763,9 @@ impl<M: BorshDeserialize> BorshDeserialize for Wire<M> {
 /// What the program's messages declare to the guard. Derive it with `#[only(Role)]` on a
 /// message that needs a role's holder, the way `onlyOwner` marks a Solidity function,
 /// `#[from_config]` on one that only the config account may send, and `#[exempt(Role)]` on one
-/// that runs where that role's rules would refuse it.
+/// that runs where that role's rules would refuse it. The derive compares roles by
+/// [`Role::NAME`], as the guard does, so a role crate linked twice is still one role. A
+/// hand-written impl does the same and lists its roles in [`Gated::MARKED`].
 ///
 /// A marker names a role, so a marker naming any other type does not compile:
 ///
@@ -788,8 +841,8 @@ impl<M: BorshDeserialize> BorshDeserialize for Wire<M> {
 /// ```
 pub trait Gated {
     /// The names of the roles this enum's markers name, which the guard compares with its own
-    /// roles at compile time. The derive fills it.
-    #[doc(hidden)]
+    /// roles at compile time. The derive fills it. A hand-written impl that leaves it empty
+    /// goes unchecked.
     const MARKED: &'static [&'static str] = &[];
 
     /// Whether this message needs role `R`'s holder. The guard then takes it only through
@@ -979,8 +1032,7 @@ where
     }
 }
 
-/// Whether every name in `marked` is one of `names`, compared by name since a const cannot
-/// compare TypeIds.
+/// Whether every name in `marked` is one of `names`.
 const fn listed(names: &[&str], marked: &[&str]) -> bool {
     let mut m = 0;
     while m < marked.len() {
@@ -1034,6 +1086,9 @@ pub trait Roles<C, M>: sealed::Sealed {
     /// checks at compile time.
     #[doc(hidden)]
     const MARKS_LISTED: bool;
+    /// Whether the roles have a name each, which the guard checks at compile time.
+    #[doc(hidden)]
+    const NAMES_DISTINCT: bool;
     /// The place in the tuple of the role with this name.
     #[doc(hidden)]
     fn index(name: &str) -> Option<usize>;
@@ -1067,6 +1122,7 @@ where
     const ROOT_PROSE: &'static str = A::PROSE_NAME;
     const ROOT_BY_NOMINATION_ONLY: bool = A::BY_NOMINATION_ONLY;
     const MARKS_LISTED: bool = listed(&[A::NAME], M::MARKED);
+    const NAMES_DISTINCT: bool = true;
 
     fn index(name: &str) -> Option<usize> {
         (name == A::NAME).then_some(0)
@@ -1108,6 +1164,7 @@ where
     const ROOT_PROSE: &'static str = A::PROSE_NAME;
     const ROOT_BY_NOMINATION_ONLY: bool = A::BY_NOMINATION_ONLY;
     const MARKS_LISTED: bool = listed(&[A::NAME, B::NAME], M::MARKED);
+    const NAMES_DISTINCT: bool = !same(A::NAME, B::NAME);
 
     fn index(name: &str) -> Option<usize> {
         if name == A::NAME {
@@ -1237,6 +1294,10 @@ where
         assert!(
             !Rs::ROOT_BY_NOMINATION_ONLY,
             "the first role creates the config with its Init, so its holder cannot be appointed only by nomination"
+        );
+        assert!(
+            Rs::NAMES_DISTINCT,
+            "the guard's roles need distinct names, since a client's operation names its role"
         );
         assert!(
             Rs::MARKS_LISTED,

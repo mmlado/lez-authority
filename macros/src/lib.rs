@@ -362,11 +362,18 @@ fn guard_handler(
     inner.vis = syn::Visibility::Inherited;
     // cargo check skips the guard's post-monomorphization assert, so check the roles here too.
     let at_roles = Span::call_site().located_at(roles[0].span());
+    let at_message = Span::call_site().located_at(message_type.span());
     let root_check = quote_spanned! {at_roles=>
         const _: () = ::core::assert!(
             !<(#(#roles,)*) as #krate::Roles<#config, #message_type>>::ROOT_BY_NOMINATION_ONLY,
             "the first role creates the config with its Init, so its holder cannot be appointed only by nomination"
         );
+        const _: () = ::core::assert!(
+            <(#(#roles,)*) as #krate::Roles<#config, #message_type>>::NAMES_DISTINCT,
+            "the guard's roles need distinct names, since a client's operation names its role"
+        );
+    };
+    let marks_check = quote_spanned! {at_message=>
         const _: () = ::core::assert!(
             <(#(#roles,)*) as #krate::Roles<#config, #message_type>>::MARKS_LISTED,
             "a marker on the message enum names a role that is not among the guard's roles"
@@ -379,6 +386,7 @@ fn guard_handler(
             __lez_message: #krate::Wire<#message_type>,
         ) #output {
             #root_check
+            #marks_check
             #inner
             #krate::guard::<(#(#roles,)*), #config, #message_type>(
                 __lez_input,
@@ -535,9 +543,10 @@ fn gated(input: &DeriveInput, krate: &TokenStream2) -> syn::Result<TokenStream2>
                 "a message is either #[only(..)], sent through the sender's seat, or #[from_config], sent by the config",
             ));
         }
+        // By name, as the compile-time check and a client's operation know a role.
         if let Some(role) = &role {
             needs.push(quote! {
-                Self::#ident { .. } => id::<__LezRole>() == id::<#role>(),
+                Self::#ident { .. } => <__LezRole as #krate::Role>::NAME == <#role as #krate::Role>::NAME,
             });
         }
         if config_only {
@@ -545,7 +554,7 @@ fn gated(input: &DeriveInput, krate: &TokenStream2) -> syn::Result<TokenStream2>
         }
         if let Some(role) = &exempt_from {
             exempt.push(quote! {
-                Self::#ident { .. } => id::<__LezRole>() == id::<#role>(),
+                Self::#ident { .. } => <__LezRole as #krate::Role>::NAME == <#role as #krate::Role>::NAME,
             });
         }
         for marker in role.iter().chain(&exempt_from) {
@@ -558,10 +567,6 @@ fn gated(input: &DeriveInput, krate: &TokenStream2) -> syn::Result<TokenStream2>
     let needs = (!needs.is_empty()).then(|| {
         quote! {
             fn needs<__LezRole: #krate::Role>(&self) -> bool {
-                // Bounded on Role, so a marker naming any other type fails to compile.
-                fn id<__T: #krate::Role>() -> ::core::any::TypeId {
-                    ::core::any::TypeId::of::<__T>()
-                }
                 #[allow(unreachable_patterns)]
                 match self {
                     #(#needs)*
@@ -580,10 +585,6 @@ fn gated(input: &DeriveInput, krate: &TokenStream2) -> syn::Result<TokenStream2>
     let exempt = (!exempt.is_empty()).then(|| {
         quote! {
             fn exempt<__LezRole: #krate::Role>(&self) -> bool {
-                // Bounded on Role, so a marker naming any other type fails to compile.
-                fn id<__T: #krate::Role>() -> ::core::any::TypeId {
-                    ::core::any::TypeId::of::<__T>()
-                }
                 #[allow(unreachable_patterns)]
                 match self {
                     #(#exempt)*
@@ -942,6 +943,10 @@ mod tests {
         .collect();
         assert!(
             expanded.contains("const_:()=::core::assert!(!<(Admin,Freeze,)as::lez_authority::Roles<Config,Message>>::ROOT_BY_NOMINATION_ONLY"),
+            "{expanded}"
+        );
+        assert!(
+            expanded.contains("const_:()=::core::assert!(<(Admin,Freeze,)as::lez_authority::Roles<Config,Message>>::NAMES_DISTINCT"),
             "{expanded}"
         );
         assert!(
