@@ -83,14 +83,17 @@ pub fn derive_gated(input: TokenStream) -> TokenStream {
 
 /// The path to lez-authority from the program's crate.
 fn krate() -> syn::Result<TokenStream2> {
-    // A build script links its build-dependencies, which the lookup does not read.
-    if std::env::var("CARGO_CRATE_NAME").as_deref() == Ok("build_script_build") {
-        return Ok(quote!(::lez_authority));
-    }
+    // A build script links its build-dependencies, not the package's own.
+    let kinds: &[&str] = if std::env::var("CARGO_CRATE_NAME").as_deref() == Ok("build_script_build")
+    {
+        &["build-dependencies"]
+    } else {
+        &["dependencies", "dev-dependencies"]
+    };
     let Some((manifest, program, workspace)) = read_manifests() else {
         return Ok(quote!(::lez_authority));
     };
-    let Some(found) = candidates(&program, workspace.as_deref()) else {
+    let Some(found) = candidates(&program, workspace.as_deref(), kinds) else {
         return Ok(quote!(::lez_authority));
     };
     path_to_engine(&found, &manifest)
@@ -99,13 +102,14 @@ fn krate() -> syn::Result<TokenStream2> {
 /// What the lookup found among the program's dependencies.
 struct Found {
     /// Each candidate's package and the key the program names it by, in the order the macros
-    /// try them.
+    /// rank them. The first one is taken.
     candidates: Vec<(String, String)>,
     /// Whether an inherited dependency is missing from the workspace root the lookup read.
     unresolved: bool,
 }
 
-/// The path for the first candidate, or the rule's error when the manifest holds none.
+/// The path for the first candidate. With none, `::lez_authority` when an inherited dependency
+/// went unresolved, else the rule's error.
 fn path_to_engine(found: &Found, manifest: &std::path::Path) -> syn::Result<TokenStream2> {
     let Some((package, key)) = found.candidates.first() else {
         // The root the lookup read may not be cargo's, and a renamed role crate may hide there.
@@ -141,10 +145,11 @@ fn read_manifests() -> Option<(std::path::PathBuf, String, Option<String>)> {
     Some((manifest, program, workspace))
 }
 
-/// The program's dependencies that may lead to lez-authority, in the order the macros try them:
-/// lez-authority itself, or a role crate, which is named `lez-<role>-authority` and re-exports
-/// lez-authority at its root. `None` when the manifest does not parse.
-fn candidates(program: &str, workspace: Option<&str>) -> Option<Found> {
+/// The program's dependencies of the given kinds that may lead to lez-authority, in the order
+/// the macros rank them, the first one taken: lez-authority itself, or a role crate, which is
+/// named `lez-<role>-authority` and re-exports lez-authority at its root. `None` when the
+/// manifest does not parse.
+fn candidates(program: &str, workspace: Option<&str>, kinds: &[&str]) -> Option<Found> {
     use toml_edit::{DocumentMut, Item, TableLike};
     let program = program.parse::<DocumentMut>().ok()?;
     let package = program
@@ -175,7 +180,7 @@ fn candidates(program: &str, workspace: Option<&str>) -> Option<Found> {
     let mut found: Vec<(u8, bool, String, String)> = Vec::new();
     let mut unresolved = false;
     for (owner, in_target) in owners {
-        for kind in ["dependencies", "dev-dependencies"] {
+        for &kind in kinds {
             let Some(table) = owner.get(kind).and_then(Item::as_table_like) else {
                 continue;
             };
@@ -547,6 +552,9 @@ mod tests {
         }
     }
 
+    /// The kinds of dependency a program's own code links.
+    const PROGRAM: &[&str] = &["dependencies", "dev-dependencies"];
+
     /// The candidates as `package`, or `package as key` for a renamed one.
     fn listed(found: &Found) -> Vec<String> {
         found
@@ -595,7 +603,7 @@ mod tests {
             [workspace.dependencies]
             adm = { package = "lez-admin-authority", path = "../admin" }
         "#;
-        let found = candidates(program, Some(workspace)).unwrap();
+        let found = candidates(program, Some(workspace), PROGRAM).unwrap();
         assert_eq!(
             listed(&found),
             [
@@ -615,19 +623,32 @@ mod tests {
     fn an_inherited_dependency_is_named_by_the_workspace_root() {
         let program = "[dependencies]\nadm.workspace = true\n";
         let workspace = "[workspace.dependencies]\nadm = { package = \"lez-admin-authority\", path = \"../admin\" }\n";
-        let found = candidates(program, Some(workspace)).unwrap();
+        let found = candidates(program, Some(workspace), PROGRAM).unwrap();
         assert_eq!(listed(&found), ["lez-admin-authority as adm"]);
-        let rootless = candidates(program, None).unwrap();
+        let rootless = candidates(program, None, PROGRAM).unwrap();
         assert!(rootless.candidates.is_empty() && rootless.unresolved);
-        assert!(candidates("not toml [", None).is_none());
+        assert!(candidates("not toml [", None, PROGRAM).is_none());
     }
 
     #[test]
     fn inside_the_engine_the_engine_is_the_only_candidate() {
         let engine = "[package]\nname = \"lez-authority\"\n[dependencies]\nlez-authority-macros = { path = \"macros\" }\n";
         assert_eq!(
-            listed(&candidates(engine, None).unwrap()),
+            listed(&candidates(engine, None, PROGRAM).unwrap()),
             ["lez-authority"]
+        );
+    }
+
+    #[test]
+    fn a_build_script_looks_in_its_build_dependencies() {
+        let program = "[dependencies]\nlez-freeze-authority = \"0.1\"\n[build-dependencies]\ngen = { package = \"lez-admin-authority\", version = \"0.3\" }\n";
+        assert_eq!(
+            listed(&candidates(program, None, &["build-dependencies"]).unwrap()),
+            ["lez-admin-authority as gen"]
+        );
+        assert_eq!(
+            listed(&candidates(program, None, PROGRAM).unwrap()),
+            ["lez-freeze-authority"]
         );
     }
 
@@ -635,7 +656,7 @@ mod tests {
     fn the_engine_comes_first_within_its_tier() {
         let program = "[dependencies]\nlez-admin-authority = \"0.3\"\nlez-authority = \"0.3\"\n";
         assert_eq!(
-            listed(&candidates(program, None).unwrap()),
+            listed(&candidates(program, None, PROGRAM).unwrap()),
             ["lez-authority", "lez-admin-authority"]
         );
     }
@@ -673,6 +694,10 @@ mod tests {
             Ok(":: engine".to_owned())
         );
         assert_eq!(path(&[], true), Ok(":: lez_authority".to_owned()));
+        assert_eq!(
+            path(&[("lez-freeze-authority", "lez-freeze-authority")], true),
+            Ok(":: lez_freeze_authority :: lez_authority".to_owned())
+        );
         assert_eq!(
             path(&[], false),
             Err("lez-authority's macros found no dependency named lez-authority or lez-<role>-authority in /program/Cargo.toml".to_owned())

@@ -1,0 +1,10 @@
+[package]
+name = "program-build-script"
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "A build script that reaches the engine only through a role crate in its build-dependencies"
+
+[build-dependencies]
+lez-sample-authority = { path = "../lez-sample-authority" }
