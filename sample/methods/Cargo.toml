@@ -1,0 +1,16 @@
+[package]
+name = "sample-methods"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Builds the token sample's guest into the program binary the loader deploys"
+publish = false
+
+# Standalone on purpose: building it needs the risc0 toolchain, the workspace's host tests do not.
+[workspace]
+
+[build-dependencies]
+risc0-build = "3.0.5"
+
+[package.metadata.risc0]
+methods = [".."]
