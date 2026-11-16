@@ -20,23 +20,42 @@ struct Config {
     admin: AuthoritySlot,
     #[slot(Freeze)]
     freeze: FreezeSlot,
+    value: u64,
 }
 
 #[derive(BorshSerialize, BorshDeserialize, Gated)]
 enum Message {
     /// Changes one part of the freeze slot, or nothing for any other number.
     Touch(u8),
+    Set(u64),
+    #[only(Admin)]
+    AdminSet(u64),
+    #[only(Freeze)]
+    AuthoritySet(u64),
+    #[exempt(Freeze)]
+    ExemptSet(u64),
+    #[only(Admin)]
+    #[exempt(Freeze)]
+    AdminExemptSet(u64),
+    #[exempt(Freeze)]
+    ExemptTouch(u8),
 }
 
 fn handle(input: &ReceiveInput, message: Message) -> Response {
-    let Message::Touch(part) = message;
     let mut config: Config = borsh::from_slice(&input.pre_state).unwrap();
-    match part {
-        0 => *config.freeze.authority_slot_mut() = holder(STRANGER),
-        1 => config.freeze.frozen = !config.freeze.frozen,
-        2 => config.freeze.frozen_accounts.push(SUCCESSOR),
-        3 => config.freeze.frozen_accounts.reverse(),
-        _ => {}
+    match message {
+        Message::Touch(part) | Message::ExemptTouch(part) => match part {
+            0 => *config.freeze.authority_slot_mut() = holder(STRANGER),
+            1 => config.freeze.frozen = !config.freeze.frozen,
+            2 => config.freeze.frozen_accounts.push(SUCCESSOR),
+            3 => config.freeze.frozen_accounts.reverse(),
+            _ => {}
+        },
+        Message::Set(value)
+        | Message::AdminSet(value)
+        | Message::AuthoritySet(value)
+        | Message::ExemptSet(value)
+        | Message::AdminExemptSet(value) => config.value = value,
     }
     Response::set_state(borsh::to_vec(&config).unwrap())
 }
@@ -100,6 +119,7 @@ fn config(freeze: AuthoritySlot) -> Config {
             authority_slot: freeze,
             ..FreezeSlot::default()
         },
+        value: 0,
     }
 }
 
@@ -129,16 +149,33 @@ fn frozen(mut config: Config) -> Config {
     config
 }
 
+/// `config` with the value at `value`.
+fn valued(mut config: Config, value: u64) -> Config {
+    config.value = value;
+    config
+}
+
+/// `message` sent straight to the config. The config as written back.
+fn straight(pre: &Config, message: Message) -> Result<Config, Refusal> {
+    let response = at(config_actor(), None, false, Some(pre), message.into())?;
+    Ok(borsh::from_slice(response.post_state.as_ref().unwrap()).unwrap())
+}
+
+fn e217() -> Refusal {
+    Refusal::of::<Freeze>(FreezeError::Frozen.into())
+}
+
 fn e208() -> Refusal {
     Refusal::of::<Freeze>(FreezeError::NotAdminOrFreezeAuthority.into())
 }
 
 #[test]
 fn the_freeze_codes_are_stable() {
-    let expected: [(FreezeError, u16); 3] = [
+    let expected: [(FreezeError, u16); 4] = [
         (FreezeError::NotAdminOrFreezeAuthority, 208),
         (FreezeError::AlreadyFrozen, 211),
         (FreezeError::NotFrozen, 212),
+        (FreezeError::Frozen, 217),
     ];
     for (error, code) in expected {
         assert_eq!(error.code(), code, "{error:?}");
@@ -155,6 +192,10 @@ fn the_freeze_codes_are_stable() {
     assert_eq!(
         Refusal::of::<Freeze>(FreezeError::NotFrozen.into()).text(),
         "lez-freeze-authority/freeze E212: the program is not frozen"
+    );
+    assert_eq!(
+        e217().text(),
+        "lez-freeze-authority/freeze E217: the program is frozen"
     );
 }
 
@@ -643,11 +684,13 @@ fn a_freeze_outlasts_its_freeze_authority_until_the_next_one_releases_it() {
     let frozen_program = send(AUTHORITY, &config(holder(AUTHORITY)), freeze()).unwrap();
     let stepped_down = send(AUTHORITY, &frozen_program, renounce()).unwrap();
     assert_eq!(stepped_down, frozen(config(AuthoritySlot::Unset)));
+    assert_eq!(straight(&stepped_down, Message::Set(1)), Err(e217()));
     assert_eq!(
         send(AUTHORITY, &stepped_down, release()),
         Err(Refusal::of::<Freeze>(AuthorityError::NotInstalled))
     );
     let offered = send(ADMIN, &stepped_down, nominate(SUCCESSOR)).unwrap();
+    assert_eq!(straight(&offered, Message::Set(1)), Err(e217()));
     let appointed = send(SUCCESSOR, &offered, accept()).unwrap();
     assert_eq!(appointed, frozen(config(holder(SUCCESSOR))));
     assert_eq!(
@@ -704,10 +747,162 @@ fn a_freeze_standing_when_the_admin_renounces_is_released_by_the_freeze_authorit
     let frozen_program = frozen(config(holder(AUTHORITY)));
     let renounced = send(ADMIN, &frozen_program, admin_op(Op::Renounce)).unwrap();
     assert_eq!(renounced, frozen(without_admin(holder(AUTHORITY))));
+    assert_eq!(straight(&renounced, Message::Set(1)), Err(e217()));
     let released = send(AUTHORITY, &renounced, release()).unwrap();
     assert_eq!(released, without_admin(holder(AUTHORITY)));
     assert_eq!(
         send(AUTHORITY, &released, freeze()),
         Ok(frozen(without_admin(holder(AUTHORITY))))
+    );
+}
+
+#[test]
+fn a_freeze_refuses_every_program_message_at_the_config() {
+    let frozen_program = || frozen(config(holder(AUTHORITY)));
+    assert_eq!(straight(&frozen_program(), Message::Set(1)), Err(e217()));
+    assert_eq!(straight(&frozen_program(), Message::Touch(4)), Err(e217()));
+    assert_eq!(
+        send(ADMIN, &frozen_program(), Message::AdminSet(1).into()),
+        Err(e217())
+    );
+}
+
+#[test]
+fn an_exempt_message_runs_through_a_freeze() {
+    let frozen_program = || frozen(config(holder(AUTHORITY)));
+    assert_eq!(
+        straight(&frozen_program(), Message::ExemptSet(5)),
+        Ok(valued(frozen_program(), 5))
+    );
+    assert_eq!(
+        send(ADMIN, &frozen_program(), Message::AdminExemptSet(6).into()),
+        Ok(valued(frozen_program(), 6))
+    );
+}
+
+#[test]
+fn an_exempt_message_still_needs_its_holder_and_cannot_lift_the_freeze() {
+    let frozen_program = frozen(config(holder(AUTHORITY)));
+    assert_eq!(
+        send(STRANGER, &frozen_program, Message::AdminExemptSet(6).into()),
+        Err(Refusal::of::<Admin>(AuthorityError::NotHolder))
+    );
+    assert_eq!(
+        straight(&frozen_program, Message::ExemptTouch(1)),
+        Err(Refusal::of::<Freeze>(AuthorityError::SlotChanged))
+    );
+}
+
+#[test]
+fn the_admin_s_check_comes_before_the_freeze() {
+    assert_eq!(
+        send(
+            STRANGER,
+            &frozen(config(holder(AUTHORITY))),
+            Message::AdminSet(1).into()
+        ),
+        Err(Refusal::of::<Admin>(AuthorityError::NotHolder))
+    );
+}
+
+#[test]
+fn every_role_operation_runs_through_a_freeze() {
+    let frozen_program = frozen(config(holder(AUTHORITY)));
+    let offered = send(
+        ADMIN,
+        &frozen_program,
+        admin_op(Op::Nominate { next: SUCCESSOR }),
+    )
+    .unwrap();
+    let handed_over = send(SUCCESSOR, &offered, admin_op(Op::Accept { pda_seed: None })).unwrap();
+    let under_successor = |freeze| Config {
+        admin: holder(SUCCESSOR),
+        ..config(freeze)
+    };
+    assert_eq!(handed_over, frozen(under_successor(holder(AUTHORITY))));
+    let nominated = send(SUCCESSOR, &handed_over, nominate(STRANGER)).unwrap();
+    let replaced = send(STRANGER, &nominated, accept()).unwrap();
+    assert_eq!(replaced, frozen(under_successor(holder(STRANGER))));
+    assert_eq!(
+        send(STRANGER, &replaced, release()),
+        Ok(under_successor(holder(STRANGER)))
+    );
+    assert_eq!(
+        send(STRANGER, &replaced, renounce()),
+        Ok(frozen(under_successor(AuthoritySlot::Unset)))
+    );
+}
+
+#[test]
+fn after_a_release_every_message_runs_again() {
+    let released = send(AUTHORITY, &frozen(config(holder(AUTHORITY))), release()).unwrap();
+    assert_eq!(
+        straight(&released, Message::Set(3)),
+        Ok(valued(config(holder(AUTHORITY)), 3))
+    );
+    assert_eq!(
+        send(ADMIN, &released, Message::AdminSet(4).into()),
+        Ok(valued(config(holder(AUTHORITY)), 4))
+    );
+}
+
+#[test]
+fn before_the_admin_s_init_an_exempt_message_at_the_config_is_refused() {
+    assert_eq!(
+        at(
+            config_actor(),
+            None,
+            false,
+            None,
+            Message::ExemptSet(1).into()
+        )
+        .err(),
+        Some(Refusal::of::<Admin>(AuthorityError::NotInitialized))
+    );
+}
+
+#[test]
+fn a_freeze_left_with_no_admin_and_no_freeze_authority_stands_for_good() {
+    let abandoned = || {
+        frozen(Config {
+            admin: AuthoritySlot::Renounced,
+            ..config(AuthoritySlot::Unset)
+        })
+    };
+    let renounced = send(
+        ADMIN,
+        &frozen(config(holder(AUTHORITY))),
+        admin_op(Op::Renounce),
+    )
+    .unwrap();
+    assert_eq!(send(AUTHORITY, &renounced, renounce()), Ok(abandoned()));
+    assert_eq!(straight(&abandoned(), Message::Set(1)), Err(e217()));
+    assert_eq!(
+        send(AUTHORITY, &abandoned(), release()),
+        Err(Refusal::of::<Freeze>(AuthorityError::NotInstalled))
+    );
+    assert_eq!(
+        straight(&abandoned(), Message::ExemptSet(2)),
+        Ok(valued(abandoned(), 2))
+    );
+}
+
+#[test]
+fn the_freeze_authority_s_own_program_message_is_frozen_too() {
+    assert_eq!(
+        send(
+            AUTHORITY,
+            &frozen(config(holder(AUTHORITY))),
+            Message::AuthoritySet(1).into()
+        ),
+        Err(e217())
+    );
+    assert_eq!(
+        send(
+            AUTHORITY,
+            &config(holder(AUTHORITY)),
+            Message::AuthoritySet(1).into()
+        ),
+        Ok(valued(config(holder(AUTHORITY)), 1))
     );
 }

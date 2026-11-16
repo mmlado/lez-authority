@@ -1,8 +1,9 @@
 //! Freeze authority for LEZ actor programs: the freeze role of lez-authority, answering to the
 //! admin of lez-admin-authority. A program depends on this crate alone, which re-exports the
 //! admin and the engine. It puts the engine's guard on its handler with `roles(Admin, Freeze)`,
-//! and its config holds the freeze slot in a field marked `#[slot(Freeze)]`. The admin's
-//! `#[admin]` names the admin alone, so a freeze slot under it is never reached.
+//! and its config holds the freeze slot in a field marked `#[slot(Freeze)]`. A message that runs
+//! through a freeze is marked `#[exempt(Freeze)]`. The admin's `#[admin]` names the admin alone,
+//! so a freeze slot under it is never reached.
 
 #![warn(missing_docs)]
 
@@ -72,14 +73,17 @@ pub enum FreezeError {
     AlreadyFrozen,
     /// A release of a program that is not frozen.
     NotFrozen,
+    /// A program message while the program is frozen.
+    Frozen,
 }
 
 impl FreezeError {
     /// Every refusal, for the table test.
-    pub const ALL: [Self; 3] = [
+    pub const ALL: [Self; 4] = [
         Self::NotAdminOrFreezeAuthority,
         Self::AlreadyFrozen,
         Self::NotFrozen,
+        Self::Frozen,
     ];
 
     /// The stable code. Append-only: a number is never reused or renumbered.
@@ -89,6 +93,7 @@ impl FreezeError {
             Self::NotAdminOrFreezeAuthority => 208,
             Self::AlreadyFrozen => 211,
             Self::NotFrozen => 212,
+            Self::Frozen => 217,
         }
     }
 
@@ -101,6 +106,7 @@ impl FreezeError {
             }
             Self::AlreadyFrozen => "the program is already frozen",
             Self::NotFrozen => "the program is not frozen",
+            Self::Frozen => "the program is frozen",
         }
     }
 }
@@ -120,6 +126,8 @@ impl From<FreezeError> for AuthorityError {
 /// nobody can nominate where the slot has no holder, so an emptied slot stays empty. An offer
 /// standing at that moment can still be accepted, and nobody can withdraw it. Only the freeze
 /// authority freezes and releases, and a freeze operation that would change nothing is refused.
+/// While the program is frozen, every program message at the config is refused (E217), but for
+/// one marked `#[exempt(Freeze)]`.
 impl<C> Policy<C> for Freeze
 where
     C: HasSlot<Freeze> + HasSlot<Admin>,
@@ -152,6 +160,13 @@ where
             FreezeOp::Release => slot.frozen = false,
         }
         Ok(slot)
+    }
+
+    fn may_run(_ctx: &Ctx, config: &C) -> Result<(), Refusal> {
+        if HasSlot::<Freeze>::slot(config).frozen {
+            return Err(Refusal::of::<Freeze>(FreezeError::Frozen.into()));
+        }
+        Ok(())
     }
 }
 
@@ -193,7 +208,8 @@ pub fn freeze_authority_op<M>(op: Op) -> Wire<M> {
 /// runs it at the config.
 #[derive(BorshSerialize, BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FreezeOp {
-    /// Freezes the program. Refused with E211 when it is frozen already.
+    /// Freezes the program: every program message at the config is then refused (E217), but for
+    /// the exempt ones. Refused with E211 when it is frozen already.
     Freeze,
     /// Releases the program. Refused with E212 when it is not frozen.
     Release,
