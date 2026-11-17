@@ -126,8 +126,9 @@ impl From<FreezeError> for AuthorityError {
 /// nobody can nominate where the slot has no holder, so an emptied slot stays empty. An offer
 /// standing at that moment can still be accepted, and nobody can withdraw it. Only the freeze
 /// authority freezes and releases, and a freeze operation that would change nothing is refused.
-/// While the program is frozen, every program message at the config is refused (E217), but for
-/// one marked `#[exempt(Freeze)]`.
+/// While the program is frozen, every program message is refused (E217), but for one marked
+/// `#[exempt(Freeze)]`: at the config, and at the program's other actors through their request
+/// for clearance, so a refused message there changes nothing.
 impl<C> Policy<C> for Freeze
 where
     C: HasSlot<Freeze> + HasSlot<Admin>,
@@ -209,8 +210,9 @@ pub fn freeze_authority_op<M>(op: Op) -> Wire<M> {
 /// runs it at the config.
 #[derive(BorshSerialize, BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FreezeOp {
-    /// Freezes the program: every program message at the config is then refused (E217), but for
-    /// the exempt ones. Refused with E211 when it is frozen already.
+    /// Freezes the program: every program message is then refused (E217), at the config and at
+    /// the program's other actors, but for the exempt ones. Refused with E211 when it is frozen
+    /// already.
     Freeze,
     /// Releases the program. Refused with E212 when it is not frozen.
     Release,

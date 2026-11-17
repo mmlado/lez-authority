@@ -1,6 +1,6 @@
 use lee_core::account::{Actor, ActorState};
 use lee_core::program::{PdaSeed, ReceiveInput, Response};
-use lez_authority::try_guard;
+use lez_authority::{Clearance, LibraryMessage, try_guard};
 
 use super::*;
 
@@ -39,9 +39,19 @@ enum Message {
     AdminExemptSet(u64),
     #[exempt(Freeze)]
     ExemptTouch(u8),
+    /// Adds to a counter at the actor it reaches, away from the config.
+    Count(u8),
+    #[exempt(Freeze)]
+    ExemptCount(u8),
+    #[from_config]
+    Credit(u8),
 }
 
 fn handle(input: &ReceiveInput, message: Message) -> Response {
+    if let Message::Count(more) | Message::ExemptCount(more) | Message::Credit(more) = message {
+        let count = input.pre_state.first().copied().unwrap_or(0);
+        return Response::set_state(vec![count + more]);
+    }
     let mut config: Config = borsh::from_slice(&input.pre_state).unwrap();
     match message {
         Message::Touch(part) | Message::ExemptTouch(part) => match part {
@@ -56,6 +66,7 @@ fn handle(input: &ReceiveInput, message: Message) -> Response {
         | Message::AuthoritySet(value)
         | Message::ExemptSet(value)
         | Message::AdminExemptSet(value) => config.value = value,
+        Message::Count(_) | Message::ExemptCount(_) | Message::Credit(_) => unreachable!(),
     }
     Response::set_state(borsh::to_vec(&config).unwrap())
 }
@@ -905,4 +916,163 @@ fn the_freeze_authority_s_own_program_message_is_frozen_too() {
         ),
         Ok(valued(config(holder(AUTHORITY)), 1))
     );
+}
+
+fn actor(account: AccountId) -> Actor {
+    Actor::new(account, PROGRAM)
+}
+
+/// `message` handled at `account`'s actor, sent by `from`, then any request for clearance it
+/// adds, answered at the config as `pre` holds it. The actor's response.
+fn elsewhere(
+    account: AccountId,
+    from: Option<Actor>,
+    authorized: bool,
+    pre: &Config,
+    message: Message,
+) -> Result<Response, Refusal> {
+    let response = at(actor(account), from, authorized, None, message.into())?;
+    for sent in response
+        .sync_messages
+        .iter()
+        .filter(|sent| sent.to == config_actor())
+    {
+        let request: Wire<Message> = borsh::from_slice(&sent.message).unwrap();
+        let answer = at(
+            config_actor(),
+            Some(actor(account)),
+            false,
+            Some(pre),
+            request,
+        )?;
+        assert_eq!(answer.post_state, None);
+    }
+    Ok(response)
+}
+
+/// The requests for clearance in `response`.
+fn requests(response: &Response) -> Vec<Clearance> {
+    response
+        .sync_messages
+        .iter()
+        .filter(|sent| sent.to == config_actor())
+        .map(|sent| match borsh::from_slice(&sent.message).unwrap() {
+            Wire::<Message>::Library(LibraryMessage::Clearance(request)) => request,
+            _ => panic!("not a request for clearance"),
+        })
+        .collect()
+}
+
+#[test]
+fn a_freeze_reaches_a_message_at_another_actor_whoever_sent_it() {
+    let frozen_program = frozen(config(holder(AUTHORITY)));
+    for from in senders() {
+        for authorized in [true, false] {
+            let at_stranger =
+                |pre: &Config| elsewhere(STRANGER, from, authorized, pre, Message::Count(1));
+            assert_eq!(at_stranger(&frozen_program).err(), Some(e217()));
+            let counted = at_stranger(&config(holder(AUTHORITY))).unwrap();
+            assert_eq!(counted.post_state.as_deref(), Some(&[1u8][..]));
+            assert_eq!(requests(&counted), [Clearance { authorized }]);
+        }
+    }
+}
+
+/// Every sender a message at another actor can have: a client, another actor of the program, an
+/// actor of another program, and the config.
+fn senders() -> [Option<Actor>; 4] {
+    [
+        None,
+        Some(actor(SUCCESSOR)),
+        Some(Actor::new(SUCCESSOR, ELSEWHERE)),
+        Some(config_actor()),
+    ]
+}
+
+#[test]
+fn an_exempt_message_handled_at_another_actor_runs_through_a_freeze() {
+    for from in senders() {
+        let counted = elsewhere(
+            STRANGER,
+            from,
+            true,
+            &frozen(config(holder(AUTHORITY))),
+            Message::ExemptCount(1),
+        )
+        .unwrap();
+        assert_eq!(counted.post_state.as_deref(), Some(&[1u8][..]));
+        assert!(requests(&counted).is_empty());
+    }
+}
+
+#[test]
+fn a_freeze_reaches_a_message_the_config_sends_on() {
+    let credit = |pre: &Config| {
+        elsewhere(
+            SUCCESSOR,
+            Some(config_actor()),
+            false,
+            pre,
+            Message::Credit(2),
+        )
+    };
+    assert_eq!(
+        credit(&frozen(config(holder(AUTHORITY)))).err(),
+        Some(e217())
+    );
+    assert_eq!(
+        credit(&config(holder(AUTHORITY)))
+            .unwrap()
+            .post_state
+            .as_deref(),
+        Some(&[2u8][..])
+    );
+}
+
+#[test]
+fn after_a_release_a_message_at_another_actor_runs_again() {
+    let released = send(AUTHORITY, &frozen(config(holder(AUTHORITY))), release()).unwrap();
+    let counted = elsewhere(STRANGER, None, false, &released, Message::Count(1)).unwrap();
+    assert_eq!(counted.post_state.as_deref(), Some(&[1u8][..]));
+    assert_eq!(requests(&counted), [Clearance { authorized: false }]);
+}
+
+#[test]
+fn before_the_admin_s_init_no_freezable_message_at_another_actor_runs() {
+    let response = at(actor(STRANGER), None, true, None, Message::Count(1).into()).unwrap();
+    assert_eq!(requests(&response), [Clearance { authorized: true }]);
+    let request =
+        Wire::<Message>::Library(LibraryMessage::Clearance(Clearance { authorized: true }));
+    assert_eq!(
+        at(config_actor(), Some(actor(STRANGER)), false, None, request).err(),
+        Some(Refusal::of::<Admin>(AuthorityError::NotInitialized))
+    );
+}
+
+#[test]
+fn before_the_admin_s_init_an_exempt_message_at_another_actor_runs() {
+    let response = at(
+        actor(STRANGER),
+        None,
+        true,
+        None,
+        Message::ExemptCount(1).into(),
+    )
+    .unwrap();
+    assert_eq!(response.post_state.as_deref(), Some(&[1u8][..]));
+    assert!(requests(&response).is_empty());
+}
+
+#[test]
+fn a_seat_forwards_a_role_operation_and_a_gated_message_with_no_request_for_clearance() {
+    for (sender, message) in [(AUTHORITY, release()), (ADMIN, Message::AdminSet(1).into())] {
+        let hop = at(actor(sender), None, true, None, message).unwrap();
+        let [sent] = hop.sync_messages.as_slice() else {
+            panic!("one message from the seat");
+        };
+        assert!(matches!(
+            borsh::from_slice::<Wire<Message>>(&sent.message).unwrap(),
+            Wire::Library(LibraryMessage::Forwarded(_))
+        ));
+    }
 }
