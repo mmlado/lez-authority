@@ -44,12 +44,17 @@ pub enum Message {
     /// The admin mints `amount` to `to`. The config credits `to`'s own actor.
     #[only(Admin)]
     Mint { to: AccountId, amount: u64 },
-    /// What an owner's actor receives from the config. Nobody else may send it.
-    #[from_config]
+    /// What an owner's actor receives from another actor of the program: the config for a mint,
+    /// the sender's actor for a transfer. Its handler refuses anyone else.
     Credit(u64),
     /// The admin posts a notice on the config. A freeze lets it through, so the admin can say
     /// why the program is frozen.
     #[only(Admin)]
     #[exempt(Freeze)]
     SetNotice(String),
+    /// An owner moves `amount` to `to`. Sent to the owner's own actor and signed by the owner:
+    /// that actor debits the owner and credits `to`'s actor. The credit is a sync message, so a
+    /// private recipient must be an account the sender's wallet proves for, and a transfer to
+    /// another owner's private account cannot be built.
+    Transfer { to: AccountId, amount: u64 },
 }

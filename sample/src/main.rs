@@ -1,12 +1,17 @@
 //! The token sample, written as a plain LEZ program. Its config lives on the config account, a
 //! PDA of the program id and `CONFIG_SEED`, and holds the admin's slot, the freeze authority's
 //! and the admin's notice. Each owner's balance lives at the owner's own actor under the
-//! program. The admin mints: the config credits the owner's actor. While the program is frozen
-//! the mint is refused, and the admin's notice, marked exempt, still runs. The attribute puts
-//! the guard in front of the handler, and the guard runs the admin's and the freeze
-//! authority's operations without it. Only the deployer, the program's own account, sends the
-//! admin's `Init`. The first write to the config account needs
-//! `PublicAccountEvidence::Pda { program, seed }` in the transaction.
+//! program. The admin mints: the config credits the owner's actor. An owner transfers by
+//! sending `Transfer`, signed, to its own actor, which debits it and credits the recipient's
+//! actor. While the program is frozen the mint and the transfer are refused, the transfer
+//! through the requests for clearance its actors send the config, and the admin's notice,
+//! marked exempt, still runs. The attribute puts the guard in front of the handler, and the
+//! guard runs the admin's and the freeze authority's operations without it. Only the deployer,
+//! the program's own account, sends the admin's `Init`. The first write to the config account
+//! needs `PublicAccountEvidence::Pda { program, seed }` in the transaction, and every
+//! transaction that runs a message away from the config names the config actor. A credit is a
+//! sync message, for a mint and a transfer alike, so it reaches a private account only in a
+//! transaction that proves for that account.
 
 use borsh::BorshDeserialize;
 use lee_core::account::Actor;
@@ -22,6 +27,10 @@ fn handle_message(input: &ReceiveInput, message: Message) -> Response {
             Response::keep_state().send_sync(owner, &Message::Credit(amount))
         }
         Message::Credit(amount) => {
+            assert!(
+                input.from_own_program(),
+                "a credit comes only from this program's own actors"
+            );
             let mut balance: Balance = state(input);
             balance.amount = balance
                 .amount
@@ -37,6 +46,17 @@ fn handle_message(input: &ReceiveInput, message: Message) -> Response {
             let mut config: Config = state(input);
             config.notice = notice;
             Response::set_state(borsh::to_vec(&config).expect("the config encodes"))
+        }
+        Message::Transfer { to, amount } => {
+            assert!(input.is_authorized, "the sender must sign the transfer");
+            let mut balance: Balance = state(input);
+            balance.amount = balance
+                .amount
+                .checked_sub(amount)
+                .expect("the balance covers the transfer");
+            let recipient = Actor::new(to, input.receiver.program_account_id);
+            Response::set_state(borsh::to_vec(&balance).expect("the balance encodes"))
+                .send_sync(recipient, &Message::Credit(amount))
         }
     }
 }
@@ -55,10 +75,13 @@ lee_core::actor_entrypoint!(handle_message);
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use lee_core::{
         account::{AccountId, ActorState},
         program::{SyncMessage, Transition},
     };
+    use lez_freeze_authority::lez_authority::LibraryMessage;
     use lez_freeze_authority::{
         AuthoritySlot, FreezeOp, Holder, Op, Slot, Wire, admin_op, freeze_authority_op, freeze_op,
     };
@@ -211,11 +234,35 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "this message comes only from the config account")]
-    fn only_the_config_credits() {
+    #[should_panic(expected = "a credit comes only from this program's own actors")]
+    fn a_client_s_credit_is_refused() {
         let _transition = run(
             actor(OWNER),
-            Some(actor(STRANGER)),
+            None,
+            true,
+            Vec::new(),
+            Message::Credit(5).into(),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "a credit comes only from this program's own actors")]
+    fn a_signed_credit_from_another_program_is_refused() {
+        let _transition = run(
+            actor(OWNER),
+            Some(Actor::new(STRANGER, STRANGER)),
+            true,
+            Vec::new(),
+            Message::Credit(5).into(),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "a credit comes only from this program's own actors")]
+    fn a_credit_from_another_program_is_refused() {
+        let _transition = run(
+            actor(OWNER),
+            Some(Actor::new(STRANGER, STRANGER)),
             false,
             Vec::new(),
             Message::Credit(5).into(),
@@ -378,5 +425,165 @@ mod tests {
         assert_eq!(to, actor(OWNER));
         let credit: Wire<Message> = borsh::from_slice(&message).unwrap();
         assert_eq!(credit, Message::Credit(5).into());
+    }
+
+    /// Every actor's state in one transaction, as the runtime keeps it.
+    type States = BTreeMap<Actor, Vec<u8>>;
+
+    /// Runs `message` at `to` as the runtime does: the handler over the actor's state, the state
+    /// it writes, then each message it sends, depth first. `signers` signed the transaction. The
+    /// requests for clearance it answered, as the sending actor's account and the bit it carried.
+    fn execute(
+        states: &mut States,
+        to: Actor,
+        from: Option<Actor>,
+        signers: &[AccountId],
+        message: Vec<u8>,
+    ) -> Vec<(AccountId, bool)> {
+        let wire: Wire<Message> = borsh::from_slice(&message).unwrap();
+        let input = ReceiveInput {
+            receiver: to,
+            from,
+            is_authorized: signers.contains(&to.account_id),
+            pre_state: ActorState::from(states.get(&to).cloned().unwrap_or_default()),
+            message,
+        };
+        let transition = handle_message(&input, wire).into_transition(input);
+        if let Some(post) = &transition.response.post_state {
+            states.insert(to, post.to_vec());
+        }
+        let mut cleared = Vec::new();
+        for sent in transition.response.sync_messages {
+            if let Wire::Library(LibraryMessage::Clearance(request)) =
+                borsh::from_slice::<Wire<Message>>(&sent.message).unwrap()
+            {
+                cleared.push((to.account_id, request.authorized));
+            }
+            cleared.extend(execute(states, sent.to, Some(to), signers, sent.message));
+        }
+        cleared
+    }
+
+    /// The config as `config` holds it, and each owner's balance.
+    fn states(config: &Config, balances: &[(AccountId, u64)]) -> States {
+        let mut states = States::from([(config_actor(), borsh::to_vec(config).unwrap())]);
+        for &(owner, amount) in balances {
+            states.insert(actor(owner), borsh::to_vec(&Balance { amount }).unwrap());
+        }
+        states
+    }
+
+    fn balance(states: &States, owner: AccountId) -> u64 {
+        states.get(&actor(owner)).map_or(0, |state| {
+            borsh::from_slice::<Balance>(state).unwrap().amount
+        })
+    }
+
+    /// `from`'s transfer of `amount` to `to`, sent to `from`'s actor and signed by `signers`. The
+    /// requests for clearance it answered.
+    fn transfer(
+        states: &mut States,
+        from: AccountId,
+        to: AccountId,
+        amount: u64,
+        signers: &[AccountId],
+    ) -> Vec<(AccountId, bool)> {
+        let message = borsh::to_vec(&Wire::Program(Message::Transfer { to, amount })).unwrap();
+        execute(states, actor(from), None, signers, message)
+    }
+
+    #[test]
+    fn a_transfer_moves_the_amount_from_the_sender_s_actor_to_the_recipient_s() {
+        let mut states = states(&appointed(AUTHORITY), &[(OWNER, 5)]);
+        let cleared = transfer(&mut states, OWNER, SUCCESSOR, 3, &[OWNER]);
+        assert_eq!(cleared, [(SUCCESSOR, false), (OWNER, true)]);
+        assert_eq!(balance(&states, OWNER), 2);
+        assert_eq!(balance(&states, SUCCESSOR), 3);
+        assert_eq!(
+            states[&config_actor()],
+            borsh::to_vec(&appointed(AUTHORITY)).unwrap()
+        );
+    }
+
+    #[test]
+    fn a_transfer_to_oneself_keeps_the_balance() {
+        let mut states = states(&appointed(AUTHORITY), &[(OWNER, 5)]);
+        transfer(&mut states, OWNER, OWNER, 2, &[OWNER]);
+        assert_eq!(balance(&states, OWNER), 5);
+    }
+
+    #[test]
+    #[should_panic(expected = "lez-freeze-authority/freeze E217: the program is frozen")]
+    fn a_freeze_refuses_a_transfer() {
+        let mut states = states(&frozen(), &[(OWNER, 5)]);
+        transfer(&mut states, OWNER, SUCCESSOR, 3, &[OWNER]);
+    }
+
+    #[test]
+    #[should_panic(expected = "lez-freeze-authority/freeze E217: the program is frozen")]
+    fn a_freeze_refuses_a_credit_too() {
+        let mut states = states(&frozen(), &[]);
+        let credit = borsh::to_vec(&Wire::Program(Message::Credit(1))).unwrap();
+        execute(&mut states, actor(OWNER), Some(config_actor()), &[], credit);
+    }
+
+    #[test]
+    #[should_panic(expected = "the sender must sign the transfer")]
+    fn a_transfer_needs_the_sender_s_signature() {
+        let mut states = states(&appointed(AUTHORITY), &[(OWNER, 5)]);
+        transfer(&mut states, OWNER, SUCCESSOR, 3, &[STRANGER]);
+    }
+
+    #[test]
+    #[should_panic(expected = "the balance covers the transfer")]
+    fn a_transfer_beyond_the_balance_is_refused() {
+        let mut states = states(&appointed(AUTHORITY), &[(OWNER, 5)]);
+        transfer(&mut states, OWNER, SUCCESSOR, 6, &[OWNER]);
+    }
+
+    #[test]
+    fn a_transfer_after_a_release_lands() {
+        let released = send(AUTHORITY, &frozen(), freeze_op(FreezeOp::Release));
+        let mut states = states(&released, &[(OWNER, 5)]);
+        transfer(&mut states, OWNER, SUCCESSOR, 5, &[OWNER]);
+        assert_eq!(balance(&states, OWNER), 0);
+        assert_eq!(balance(&states, SUCCESSOR), 5);
+    }
+
+    #[test]
+    fn a_co_signed_transfer_asks_with_both_accounts_authorized() {
+        let mut states = states(&appointed(AUTHORITY), &[(OWNER, 5)]);
+        let cleared = transfer(&mut states, OWNER, SUCCESSOR, 3, &[OWNER, SUCCESSOR]);
+        assert_eq!(cleared, [(SUCCESSOR, true), (OWNER, true)]);
+    }
+
+    #[test]
+    fn an_unsigned_transfer_is_refused_whoever_relays_it() {
+        for from in [
+            Some(actor(STRANGER)),
+            Some(Actor::new(STRANGER, STRANGER)),
+            Some(config_actor()),
+        ] {
+            let mut states = states(&appointed(AUTHORITY), &[(OWNER, 5)]);
+            let message = borsh::to_vec(&Wire::Program(Message::Transfer {
+                to: SUCCESSOR,
+                amount: 3,
+            }))
+            .unwrap();
+            let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                execute(&mut states, actor(OWNER), from, &[STRANGER], message)
+            }))
+            .expect_err("an unsigned transfer is refused");
+            let text = refused
+                .downcast_ref::<&str>()
+                .copied()
+                .or_else(|| refused.downcast_ref::<String>().map(String::as_str))
+                .unwrap_or_default();
+            assert!(
+                text.contains("the sender must sign the transfer"),
+                "{from:?}: {text}"
+            );
+            assert_eq!(balance(&states, OWNER), 5);
+        }
     }
 }
