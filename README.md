@@ -25,7 +25,7 @@ A message that needs the holder of a role goes to the sender's own actor under t
 client ──────► is_authorized?     hop       from an actor of P?       send      from == (C, P)?
                via = the program ─────────► caller = from.account ──────────► handler(input, message)
                that reached me              holder checks
-                                            each role's may_run
+                                            the refusing role's may_run
                                             handler(input, message)
                                             slots unchanged?
 ```
@@ -101,11 +101,11 @@ The attribute turns the handler into an inner function and puts `lez_authority::
 | Message | Where it runs |
 | --- | --- |
 | A role's operation: `Init`, `Nominate`, `Accept`, `Renounce`, or one the role defines for itself | sent to the sender's seat and forwarded. The guard runs it at the config under the role's policy, and the handler never sees it |
-| One marked `#[only(R)]` | sent to the sender's seat and forwarded. At the config the guard checks `R`'s holder and each role's consent, then the handler runs |
+| One marked `#[only(R)]` | sent to the sender's seat and forwarded. At the config the guard checks `R`'s holder and the consent of the role that refuses program messages, unless the message is exempt from it, then the handler runs |
 | One marked `#[from_config]` | at another actor of the program, only when the config account sent it |
 | Anything else | where it is sent, as in a program without the guard |
 
-At the config every program message needs an initialized config and the consent of each role it is not exempt from, and the guard refuses a handler whose write changed a slot. The handler of a message that came through a seat sees `input.from` as the sender's own actor and `input.message` as the hop. Wherever the handler runs, the guard refuses a response that sends the config a library message, which the config would take for a hop from that actor. A client builds a role's operation with `Wire::op::<R>(op)`.
+At the config every program message needs an initialized config and the consent of the role that refuses program messages, unless it is exempt from it, and the guard refuses a handler whose write changed a slot. The handler of a message that came through a seat sees `input.from` as the sender's own actor and `input.message` as the hop. Wherever the handler runs, the guard refuses a response that sends the config a library message, which the config would take for a hop from that actor. A client builds a role's operation with `Wire::op::<R>(op)`.
 
 ## Roles
 
@@ -113,7 +113,7 @@ A role is a type with `Role`, which names it in refusals and in a client's opera
 
 A role may define operations of its own, as a freeze authority defines a freeze. A client sends one as `Op::Own`, in the role's own encoding, and the guard runs it at the config as it runs `Nominate`: through the sender's seat, and never before the root role's `Init`. Its bytes run to the end of the message with no length in front, so a client's IDL can describe them as the role's own type. `Policy::operate` decodes them, applies the role's rules and returns the role's slot as the operation leaves it. The guard checks no holder first, so those rules say who may send each operation. The guard writes back that slot alone and keeps its holder part as it was: the holder moves only through `Init`, `Nominate`, `Accept` and `Renounce`. A role that defines none refuses one with E108, a message that does not decode.
 
-A role may also refuse program messages, as a freeze authority refuses every one while the program is frozen. At the config the guard asks each role's `Policy::may_run` after the holders a message needs, and before the handler runs. A message marked `#[exempt(R)]` skips role `R`'s answer, and still needs its holders and leaves the slots alone. A management operation never reaches `may_run`, so a role's operations always run.
+A role may also refuse program messages, as a freeze authority refuses every one while the program is frozen. It says so with `Policy::REFUSES_MESSAGES`, and at the config the guard then asks its `Policy::may_run` after the holders a message needs, and before the handler runs. A guard takes one such role at most, and the attribute refuses a second where `cargo check` sees it. A message marked `#[exempt(R)]` skips role `R`'s answer, and still needs its holders and leaves the slots alone. A management operation never reaches `may_run`, so a role's operations always run.
 
 A program names its roles in the attribute: `roles(A)` for one, `roles(A, B)` for two. The first is the root. Its `Init` creates the config, and the guard's own refusals name it. A second role that answers to the first overrides the rules that differ and reads the first role's slot through the config, the way a freeze authority answers to the admin. A message may need either role's holder, or both ([ADR-0003](docs/adr/0003-roles-compose-through-traits.md)).
 
@@ -206,7 +206,7 @@ Numbers up to 116 follow the v0.2 `AdminError` table where a refusal has the sam
 | Only a seat sends the config a library message, wherever the handler runs | an open message at a holder's actor, sent unsigned, whose handler passes a client's bytes on as a hop the config would take for the holder's (E135) |
 | Every slot is compared around the handler | a handler replacing a holder, or changing what a role keeps in its slot (E126) |
 | A role's own operation writes back that role's slot alone, with its holder part kept | an operation reviving a renounced holder, or moving the holder past the nomination, the accept and the seed proof |
-| Each role's `may_run` answers at the config for every program message not exempt from it, after the holders, and never for a management operation | a program message running through a freeze at the config, or a freeze stopping its own release |
+| The `may_run` of the role that sets `REFUSES_MESSAGES` answers at the config for every program message not exempt from it, after the holders, and never for a management operation | a program message running through a freeze at the config, or a freeze stopping its own release |
 | Every role a marker names is one of the guard's roles, checked at compile time, and markers and the guard compare roles by name | an `#[only]` message whose role the guard never asks, running for anyone, such as one marked for the freeze under a guard that lists only the admin, or one marked through a second copy of a role crate |
 | A guard's roles have a name each, checked at compile time | an operation meant for one role running on another role's slot |
 | The seed proof on a PDA accept, and `via` on the holder | a program that inherited a grant accepting on a PDA's behalf (E107), or acting for it later (E120) |

@@ -48,7 +48,7 @@ A role's rules: who may install its first holder, who may nominate, who may reno
 _Avoid_: permissions, access rules
 
 **Guard**:
-What runs in front of a program's handler: it forwards at seats, unwraps hops at the config, runs management operations, checks the holders a message declares, asks each role whether a program message may run, and refuses a handler that changed a slot. The guard attribute puts it there.
+What runs in front of a program's handler: it forwards at seats, unwraps hops at the config, runs management operations, checks the holders a message declares, asks the role that refuses program messages whether one may run, and refuses a handler that changed a slot. The guard attribute puts it there.
 _Avoid_: dispatcher, framework, runtime
 
 **Plain handler**:
@@ -80,7 +80,7 @@ What a PDA nominee's accept carries: the seed that, with the program that reache
 _Avoid_: PDA claim
 
 **Open message**:
-A program message that needs no holder. It runs wherever it is sent, as in a program without the guard. At the config it needs an initialized config and the consent of each role it is not exempt from.
+A program message that needs no holder. It runs wherever it is sent, as in a program without the guard. At the config it needs an initialized config and the consent of the role that refuses program messages, unless it is exempt from it.
 _Avoid_: public message
 
 **Clearance**:

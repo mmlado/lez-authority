@@ -563,6 +563,66 @@ where
     /// ```
     const BY_NOMINATION_ONLY: bool = false;
 
+    /// Whether the role's rules refuse program messages, as a freeze refuses every one while the
+    /// program is frozen. The guard asks [`Policy::may_run`] only of a role that sets it, so rules
+    /// a role does not declare here are never asked. A guard takes one such role at most, since a
+    /// request for clearance names no role (ADR-0005), and two do not compile:
+    ///
+    /// ```compile_fail,E0080
+    /// use borsh::{BorshDeserialize, BorshSerialize};
+    /// use lee_core::program::{ReceiveInput, Response};
+    /// use lez_authority::{AuthoritySlot, Gated, HasSlot, InitGate, Policy, Role, Wire};
+    ///
+    /// struct Pauser;
+    ///
+    /// impl Role for Pauser {
+    ///     const NAME: &'static str = "pauser";
+    ///     type Slot = AuthoritySlot;
+    /// }
+    ///
+    /// impl<C: HasSlot<Pauser>> Policy<C> for Pauser {
+    ///     const REFUSES_MESSAGES: bool = true;
+    /// }
+    ///
+    /// struct Halter;
+    ///
+    /// impl Role for Halter {
+    ///     const NAME: &'static str = "halter";
+    ///     type Slot = AuthoritySlot;
+    /// }
+    ///
+    /// impl<C: HasSlot<Halter>> Policy<C> for Halter {
+    ///     const REFUSES_MESSAGES: bool = true;
+    /// }
+    ///
+    /// #[derive(Default, BorshSerialize, BorshDeserialize, HasSlot)]
+    /// struct Config {
+    ///     #[slot(Pauser)]
+    ///     pauser: AuthoritySlot,
+    ///     #[slot(Halter)]
+    ///     halter: AuthoritySlot,
+    /// }
+    ///
+    /// #[derive(BorshSerialize, BorshDeserialize, Gated)]
+    /// enum Message {
+    ///     Ping,
+    /// }
+    ///
+    /// fn handle(input: &ReceiveInput, message: Wire<Message>) -> Response {
+    ///     let seed = lez_authority::seed(b"two-refusing");
+    ///     lez_authority::guard::<(Pauser, Halter), Config, Message>(
+    ///         input,
+    ///         &seed,
+    ///         InitGate::Deployer,
+    ///         message,
+    ///         |_, _| Response::keep_state(),
+    ///     )
+    /// }
+    ///
+    /// let _reified: fn(&ReceiveInput, Wire<Message>) -> Response = handle;
+    /// ```
+    const REFUSES_MESSAGES: bool = false;
+
     /// Who may install the first holder of a slot that has none. By default whoever passes the
     /// program's init gate, at top level.
     ///
@@ -609,8 +669,9 @@ where
     }
 
     /// Whether a program message may run at the config under the role's rules, as a freeze
-    /// refuses every one while the program is frozen. The guard asks after the holders the
-    /// message needs, and not for a message marked `#[exempt(Self)]`. A management operation
+    /// refuses every one while the program is frozen. The guard asks it of a role that sets
+    /// [`Policy::REFUSES_MESSAGES`], after the holders the message needs, and not for a message
+    /// marked `#[exempt(Self)]`. A management operation
     /// never reaches it, so the role's operations always run. By default every message may run.
     ///
     /// # Errors
@@ -1006,14 +1067,15 @@ where
     Ok(())
 }
 
-/// Role `R`'s consent to a program message at the config, unless the message is exempt from it.
+/// Role `R`'s consent to a program message at the config, unless the role declares no refusal or
+/// the message is exempt from it.
 fn may_run<R, C, M>(ctx: &Ctx, config: &C, message: &M) -> Result<(), Refusal>
 where
     R: Policy<C>,
     C: HasSlot<R>,
     M: Gated,
 {
-    if message.exempt::<R>() {
+    if !R::REFUSES_MESSAGES || message.exempt::<R>() {
         return Ok(());
     }
     R::may_run(ctx, config)
@@ -1089,6 +1151,9 @@ pub trait Roles<C, M>: sealed::Sealed {
     /// Whether the roles have a name each, which the guard checks at compile time.
     #[doc(hidden)]
     const NAMES_DISTINCT: bool;
+    /// Whether one role at most refuses program messages, which the guard checks at compile time.
+    #[doc(hidden)]
+    const AT_MOST_ONE_REFUSES: bool;
     /// The place in the tuple of the role with this name.
     #[doc(hidden)]
     fn index(name: &str) -> Option<usize>;
@@ -1104,7 +1169,8 @@ pub trait Roles<C, M>: sealed::Sealed {
     /// Checks the holders the message declares it needs.
     #[doc(hidden)]
     fn gate(ctx: &Ctx, config: &C, message: &M) -> Result<(), Refusal>;
-    /// Asks each role the message is not exempt from whether it may run.
+    /// Asks the role that refuses program messages, unless the message is exempt from it, whether
+    /// it may run.
     #[doc(hidden)]
     fn may_run(ctx: &Ctx, config: &C, message: &M) -> Result<(), Refusal>;
     /// Refuses a slot in `after` that differs from the same slot in `before`.
@@ -1123,6 +1189,7 @@ where
     const ROOT_BY_NOMINATION_ONLY: bool = A::BY_NOMINATION_ONLY;
     const MARKS_LISTED: bool = listed(&[A::NAME], M::MARKED);
     const NAMES_DISTINCT: bool = true;
+    const AT_MOST_ONE_REFUSES: bool = true;
 
     fn index(name: &str) -> Option<usize> {
         (name == A::NAME).then_some(0)
@@ -1165,6 +1232,7 @@ where
     const ROOT_BY_NOMINATION_ONLY: bool = A::BY_NOMINATION_ONLY;
     const MARKS_LISTED: bool = listed(&[A::NAME, B::NAME], M::MARKED);
     const NAMES_DISTINCT: bool = !same(A::NAME, B::NAME);
+    const AT_MOST_ONE_REFUSES: bool = !(A::REFUSES_MESSAGES && B::REFUSES_MESSAGES);
 
     fn index(name: &str) -> Option<usize> {
         if name == A::NAME {
@@ -1240,12 +1308,12 @@ pub const fn seed(label: &[u8]) -> PdaSeed {
 /// - A library operation goes to the config through the sender's seat, and the guard runs it
 ///   there under the role's policy. The root role's `Init` creates the config.
 /// - A message that needs a holder goes the same way. At the config the guard checks the
-///   holder, asks [`Policy::may_run`] of each role the message is not exempt from, runs the
-///   handler, and refuses a result that changed a slot.
+///   holder, asks [`Policy::may_run`] of the role that refuses program messages, unless the
+///   message is exempt from it, runs the handler, and refuses a result that changed a slot.
 /// - A message only the config sends runs only when it came from the config account.
 /// - Anything else runs where it was sent, as in a program without the guard. At the config
-///   that needs an initialized config and the consent of each role it is not exempt from, and
-///   the slots are checked afterwards.
+///   that needs an initialized config and the consent of the role that refuses program
+///   messages, unless the message is exempt from it, and the slots are checked afterwards.
 ///
 /// Wherever the handler runs, the guard refuses a response that sends the config a library
 /// message, which the config would take for a hop from that actor.
@@ -1298,6 +1366,10 @@ where
         assert!(
             Rs::NAMES_DISTINCT,
             "the guard's roles need distinct names, since a client's operation names its role"
+        );
+        assert!(
+            Rs::AT_MOST_ONE_REFUSES,
+            "one of the guard's roles at most may refuse program messages, since a request for clearance names no role"
         );
         assert!(
             Rs::MARKS_LISTED,
@@ -1418,8 +1490,8 @@ where
     Ok(Response::set_state(bytes))
 }
 
-/// A program message at the config: the declared holders, the roles' consent, the handler,
-/// then the slots.
+/// A program message at the config: the declared holders, the refusing role's consent, the
+/// handler, then the slots.
 fn at_the_config<Rs, C, M>(
     input: &ReceiveInput,
     program: AccountId,

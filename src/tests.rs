@@ -1007,8 +1007,17 @@ const HALTED: AuthorityError = AuthorityError::Role {
     sentence: "the mark is zero",
 };
 
+/// What the marking role answers to a program message `OTHER` sent through its seat.
+const BARRED: AuthorityError = AuthorityError::Role {
+    krate: "lez-marking-authority",
+    code: 202,
+    sentence: "the sender is barred",
+};
+
 // Its own operation sets the mark, and a zero mark stops program messages, as a freeze does.
 impl<C: HasSlot<Marking>> Policy<C> for Marking {
+    const REFUSES_MESSAGES: bool = true;
+
     fn operate(ctx: &Ctx, config: &C, op: &[u8]) -> Result<Marked, Refusal> {
         let mark = borsh::from_slice(op)
             .map_err(|_| Refusal::of::<Marking>(AuthorityError::MessageDoesNotDecode))?;
@@ -1020,9 +1029,12 @@ impl<C: HasSlot<Marking>> Policy<C> for Marking {
         })
     }
 
-    fn may_run(_ctx: &Ctx, config: &C) -> Result<(), Refusal> {
+    fn may_run(ctx: &Ctx, config: &C) -> Result<(), Refusal> {
         if HasSlot::<Marking>::slot(config).mark == 0 {
             return Err(Refusal::of::<Marking>(HALTED));
+        }
+        if ctx.caller().is_some_and(|caller| caller.account() == OTHER) {
+            return Err(Refusal::of::<Marking>(BARRED));
         }
         Ok(())
     }
@@ -1778,7 +1790,7 @@ fn an_exempt_message_at_a_config_that_does_not_decode_is_refused() {
     );
 }
 
-// A second role whose rules refuse, so the tests can tell the two roles' answers apart.
+// A role with rules of its own but no REFUSES_MESSAGES, so the guard never asks them.
 struct Halting;
 
 impl Role for Halting {
@@ -1793,27 +1805,16 @@ const STOPPED: AuthorityError = AuthorityError::Role {
     sentence: "the halt is on",
 };
 
-/// What the halting role answers to a program message `OTHER` sent through its seat.
-const BARRED: AuthorityError = AuthorityError::Role {
-    krate: "lez-halting-authority",
-    code: 202,
-    sentence: "the sender is barred",
-};
-
-// It reads the caller, as a freeze of single accounts does.
 impl<C: HasSlot<Halting>> Policy<C> for Halting {
-    fn may_run(ctx: &Ctx, config: &C) -> Result<(), Refusal> {
+    fn may_run(_ctx: &Ctx, config: &C) -> Result<(), Refusal> {
         if HasSlot::<Halting>::slot(config).mark == 0 {
             return Err(Refusal::of::<Halting>(STOPPED));
-        }
-        if ctx.caller().is_some_and(|caller| caller.account() == OTHER) {
-            return Err(Refusal::of::<Halting>(BARRED));
         }
         Ok(())
     }
 }
 
-/// The slots of two roles whose rules may both refuse.
+/// The slots of the marking role and of the halting role.
 #[derive(Debug, Default, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 struct Marks {
     marking: Marked,
@@ -1890,10 +1891,12 @@ fn ask<Rs: Roles<Marks, Ask>>(pre: &Marks, message: Ask) -> Result<Response, Ref
     )
 }
 
-/// `message` from `sender`'s seat to the config of a program with the roles
-/// `(Marking, Halting)`.
-fn ask_through_seat(sender: AccountId, pre: &Marks, message: Ask) -> Result<Response, Refusal> {
-    type Both = (Marking, Halting);
+/// `message` from `sender`'s seat to the config of a program with the roles `Both`.
+fn ask_through_seat<Both: Roles<Marks, Ask>>(
+    sender: AccountId,
+    pre: &Marks,
+    message: Ask,
+) -> Result<Response, Refusal> {
     let hop = at_with::<Both, Marks, Ask>(
         seat_of(sender),
         None,
@@ -1924,39 +1927,35 @@ fn a_lone_role_s_rules_refuse_every_program_message_but_an_exempt_one() {
 }
 
 #[test]
-fn the_roles_answer_in_their_order() {
+fn rules_a_role_does_not_declare_are_never_asked() {
+    assert!(ask::<(Halting,)>(&marks(7, 0), Ask::Open).is_ok());
+    assert!(ask::<(Marking, Halting)>(&marks(7, 0), Ask::Open).is_ok());
     assert_eq!(
         ask::<(Marking, Halting)>(&marks(0, 0), Ask::Open).err(),
         Some(Refusal::of::<Marking>(HALTED))
     );
     assert_eq!(
-        ask::<(Marking, Halting)>(&marks(7, 0), Ask::Open).err(),
-        Some(Refusal::of::<Halting>(STOPPED))
+        ask::<(Halting, Marking)>(&marks(0, 0), Ask::Open).err(),
+        Some(Refusal::of::<Marking>(HALTED))
     );
-    assert!(ask::<(Marking, Halting)>(&marks(7, 7), Ask::Open).is_ok());
 }
 
 #[test]
-fn an_exemption_from_one_role_leaves_the_other_s_rules_in_place() {
-    assert_eq!(
-        ask::<(Marking, Halting)>(&marks(0, 0), Ask::ExemptMarking).err(),
-        Some(Refusal::of::<Halting>(STOPPED))
-    );
+fn an_exemption_from_another_role_lifts_nothing() {
     assert_eq!(
         ask::<(Marking, Halting)>(&marks(0, 0), Ask::ExemptHalting).err(),
         Some(Refusal::of::<Marking>(HALTED))
     );
-    assert!(ask::<(Marking, Halting)>(&marks(0, 7), Ask::ExemptMarking).is_ok());
-    assert!(ask::<(Marking, Halting)>(&marks(7, 0), Ask::ExemptHalting).is_ok());
+    assert!(ask::<(Marking, Halting)>(&marks(0, 0), Ask::ExemptMarking).is_ok());
 }
 
 #[test]
 fn a_role_s_rules_refuse_its_own_holder_too() {
     assert_eq!(
-        ask_through_seat(KEY, &marks(0, 7), Ask::GatedMarking).err(),
+        ask_through_seat::<(Marking, Halting)>(KEY, &marks(0, 7), Ask::GatedMarking).err(),
         Some(Refusal::of::<Marking>(HALTED))
     );
-    assert!(ask_through_seat(KEY, &marks(7, 7), Ask::GatedMarking).is_ok());
+    assert!(ask_through_seat::<(Marking, Halting)>(KEY, &marks(7, 7), Ask::GatedMarking).is_ok());
 }
 
 #[test]
@@ -1964,8 +1963,12 @@ fn a_role_s_rules_see_who_sent_a_message_through_its_seat() {
     let mut held_by_other = marks(7, 7);
     held_by_other.marking.authority_slot = held(OTHER);
     assert_eq!(
-        ask_through_seat(OTHER, &held_by_other, Ask::GatedMarking).err(),
-        Some(Refusal::of::<Halting>(BARRED))
+        ask_through_seat::<(Marking, Halting)>(OTHER, &held_by_other, Ask::GatedMarking).err(),
+        Some(Refusal::of::<Marking>(BARRED))
+    );
+    assert_eq!(
+        ask_through_seat::<(Halting, Marking)>(OTHER, &held_by_other, Ask::GatedMarking).err(),
+        Some(Refusal::of::<Marking>(BARRED))
     );
     assert!(ask::<(Marking, Halting)>(&held_by_other, Ask::Open).is_ok());
 }

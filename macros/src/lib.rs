@@ -372,6 +372,10 @@ fn guard_handler(
             <(#(#roles,)*) as #krate::Roles<#config, #message_type>>::NAMES_DISTINCT,
             "the guard's roles need distinct names, since a client's operation names its role"
         );
+        const _: () = ::core::assert!(
+            <(#(#roles,)*) as #krate::Roles<#config, #message_type>>::AT_MOST_ONE_REFUSES,
+            "one of the guard's roles at most may refuse program messages, since a request for clearance names no role"
+        );
     };
     let marks_check = quote_spanned! {at_message=>
         const _: () = ::core::assert!(
@@ -947,6 +951,10 @@ mod tests {
         );
         assert!(
             expanded.contains("const_:()=::core::assert!(<(Admin,Freeze,)as::lez_authority::Roles<Config,Message>>::NAMES_DISTINCT"),
+            "{expanded}"
+        );
+        assert!(
+            expanded.contains("const_:()=::core::assert!(<(Admin,Freeze,)as::lez_authority::Roles<Config,Message>>::AT_MOST_ONE_REFUSES"),
             "{expanded}"
         );
         assert!(

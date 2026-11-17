@@ -36,7 +36,7 @@ client   root (C, P)    actors [(C, P)]    signers {}    message an unmarked var
 
 hop 1    (C, P) config  caller = None
                         state present and decodes                  else E101 / E109
-                        may_run of each role the message is not exempt from   else that role's code
+                        may_run of the role that refuses messages, unless exempt   else its code
                         handler(input, message)
                         the handler's write decodes, every slot unchanged   else E109 / E126
                         no message the handler sends is a library message to (C, P)   else E135
@@ -61,7 +61,7 @@ hop 2    (C, P) config  from an actor of P                         else E119
                             Renounced                              E102
                             holder.account != A                    E103
                             holder.via != caller.via               E120
-                        may_run of each role the message is not exempt from   else that role's code
+                        may_run of the role that refuses messages, unless exempt   else its code
                         handler(input, message)
                         the handler's write decodes, every slot unchanged   else E109 / E126
                         no message the handler sends is a library message to (C, P)   else E135
