@@ -287,6 +287,14 @@ mod tests {
         );
     }
 
+    // The cap counts bytes, since every message at the config decodes the notice.
+    #[test]
+    #[should_panic(expected = "a notice holds at most 64 bytes")]
+    fn a_notice_of_the_longest_length_in_characters_but_longer_in_bytes_is_refused() {
+        let wide = "x".repeat(NOTICE_MAX - 1) + "é";
+        send(DEPLOYER, &appointed(AUTHORITY), notice(&wide));
+    }
+
     #[test]
     #[should_panic(expected = "a notice holds at most 64 bytes")]
     fn a_longer_notice_is_refused() {

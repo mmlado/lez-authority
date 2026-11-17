@@ -1,6 +1,6 @@
 # Running the token sample on a local dev sequencer
 
-What this run proves on a real sequencer: the admin's `Init` from the deployer, a mint the config credits to the owner's actor, the freeze authority appointed by the admin's offer and the nominee's accept, then replaced, revoked and appointed again, a mint by the admin to its own account, and that each refused call is refused with its code in the wallet's simulation, then included on chain without taking effect, with the same code in the sequencer's log.
+What this run proves on a real sequencer: the admin's `Init` from the deployer, a mint the config credits to the owner's actor, the freeze authority appointed by the admin's offer and the nominee's accept, then replaced, revoked and appointed again, and a mint by the admin to its own account. Then a freeze: the mint is refused while the admin's notice, marked exempt, still runs, the admin replaces the freeze authority while the program is frozen, and the successor's release lets the mint run again. Each refused call is refused with its code in the wallet's simulation, then included on chain without taking effect, with the same code in the sequencer's log.
 
 ## 1. Sequencer
 
@@ -20,7 +20,7 @@ In a second terminal, same checkout, same `nix develop`:
 ```sh
 export LEE_WALLET_HOME_DIR=$PWD/lez/wallet/configs/debug
 just run-wallet check-health                 # sets the wallet password after `just clean`
-just wallet-import-test-accounts             # two genesis-funded accounts, take the first as PAYER
+just wallet-import-test-accounts             # two genesis-funded accounts, take the first as PAYER, without its Public/ prefix
 ```
 
 ## 3. Guest binary
@@ -42,21 +42,27 @@ cargo run --release -p sample-runner -- \
   <PAYER>
 ```
 
-The runner prints the program, deployer, config, authority, successor and stranger account ids, one `included in block` line per step with the gas the wallet declared, and the state read back after a step: the config, or a balance. A step the guard must refuse first prints `refused in simulation with` and the refusal's prefix and code, then goes on chain anyway. The runner stops at the first step that does not behave.
+The runner prints the program, deployer, config, authority, successor and stranger account ids, one `included in block` line per step with the gas the wallet declared, and the state read back after a step: the config, or a balance. A step the guard must refuse first prints `refused in simulation with` and the refusal's prefix and code, then is sent anyway with reverts allowed: the wallet simulates it a second time, and the runner prints its `included in block` line. The runner stops at the first step that does not behave.
 
 ## 5. What to look for
 
 - The deployment: one transaction per segment, then the header.
 - `after init`: the admin slot held by the deployer, the freeze slot unset.
 - `after the mint`: `Balance { amount: 5 }` at the authority's actor, where the config credited it.
-- Six refused steps, each declaring the whole 2,000,000 gas budget: `a stranger's mint` with `lez-authority/admin E103`, `the freeze role's init` with `lez-authority/freeze E137`, `a stranger's nomination` with `lez-freeze-authority/freeze E208`, `a stranger's accept` with `lez-authority/freeze E114`, and `the replaced freeze authority's nomination` and `the revoked freeze authority's nomination` with `lez-freeze-authority/freeze E208`. The state read back right after each shows that it changed nothing.
-- The freeze slot: offered to the authority, then held by the authority, held by the authority with the successor nominated, held by the successor, unset after the revoke, and held by the authority again.
+- Eleven refused steps, each declaring the whole 2,000,000 gas budget: `a stranger's mint` with `lez-authority/admin E103`, `the freeze role's init` with `lez-authority/freeze E137`, `a stranger's nomination` with `lez-freeze-authority/freeze E208`, `a stranger's accept` with `lez-authority/freeze E114`, `the replaced freeze authority's nomination` and `the revoked freeze authority's nomination` with `lez-freeze-authority/freeze E208`, `a freeze with no freeze authority` with `lez-authority/freeze E131`, `the admin's freeze` with `lez-authority/freeze E103`, `a mint while frozen` with `lez-freeze-authority/freeze E217`, `a stranger's notice while frozen` with `lez-authority/admin E103`, and `the replaced freeze authority's release` with `lez-authority/freeze E103`. The state read back right after each shows that it changed nothing.
+- The freeze slot: offered to the authority, then held by the authority, held by the authority with the successor nominated, held by the successor, unset after the revoke, held by the authority again, and, while frozen, held by the authority with the successor nominated and then held by the successor.
 - `after the second mint`: `Balance { amount: 8 }`. The config is as it was at the first mint, so the two mints' gas differs by what the balance costs.
 - `after the admin's mint to itself`: `Balance { amount: 2 }` at the actor of the seat that sent the mint.
-- In the sequencer terminal, each refused transaction's text with its code. The guest's panic line also prints in the runner's terminal, once per simulation.
+- `after the freeze`: `frozen: true` in the freeze slot, and it stays set through the notice and the replacement.
+- `after the notice`: `notice: "frozen for review"` on the frozen config, posted by the admin through the freeze.
+- `after the replacement while frozen`: the freeze slot held by the successor, still frozen.
+- `after the release`: `frozen: false`, with the notice still there until `after the notice is cleared`.
+- `after the mint after the release`: `Balance { amount: 9 }`.
+- In the sequencer terminal, each refused transaction's text with its code. The guest's panic line also prints in the runner's terminal twice per refused step, once for each simulation.
 
 ## If something fails
 
+- `payer account id: InvalidBase58(..)`: pass the payer's id without the wallet's `Public/` prefix.
 - `SegmentChain(CountMismatch { .. })`: the runner counts segments from the user ELF inside the program binary. Report the numbers.
 - `UnadmittedPublicActor`: the wallet did not attach the config PDA's evidence. Report it, that is a finding about `PublicPda` mentions.
 - `ConflictingAccountIdentity`: the wallet refused a step that names one account twice with different signing, before simulating it. Report the step.
