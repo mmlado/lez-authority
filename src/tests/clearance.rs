@@ -66,10 +66,15 @@ fn a_message_handled_elsewhere_asks_the_config_for_clearance() {
     }
 }
 
-/// The senders a message handled away from the config can have, the config apart: a client,
-/// another actor of the program, and an actor of another program.
-fn senders() -> [Option<Actor>; 3] {
-    [None, Some(seat_of(OTHER)), Some(Actor::new(KEY, ELSEWHERE))]
+/// The senders a message handled away from the config can have: a client, another actor of the
+/// program, an actor of another program, and the config.
+fn senders() -> [Option<Actor>; 4] {
+    [
+        None,
+        Some(seat_of(OTHER)),
+        Some(Actor::new(KEY, ELSEWHERE)),
+        Some(config_actor()),
+    ]
 }
 
 #[test]
