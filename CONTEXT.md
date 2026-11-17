@@ -29,7 +29,7 @@ The program a holder acts through, or none for a key that signs at top level. A 
 _Avoid_: governance, delegate
 
 **Caller**:
-The sender of a message as its seat vouched for it: the seat's account, when that account authorized the message, and its via. Only the guard builds one, and it travels in a hop or a request for clearance.
+The sender of a message as the guard saw it: in a hop, the seat's account and its via, and at a request for clearance, the sending actor's account alone, when that account authorized the transaction. Only the guard builds one.
 _Avoid_: signer, origin
 
 **Slot**:

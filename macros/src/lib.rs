@@ -382,6 +382,10 @@ fn guard_handler(
             <(#(#roles,)*) as #krate::Roles<#config, #message_type>>::MARKS_LISTED,
             "a marker on the message enum names a role that is not among the guard's roles"
         );
+        const _: () = ::core::assert!(
+            <(#(#roles,)*) as #krate::Roles<#config, #message_type>>::EXEMPTIONS_REFUSE,
+            "an exempt marker names a role that refuses no program messages"
+        );
     };
     Ok(quote! {
         #(#attributes)*
@@ -508,6 +512,7 @@ fn gated(input: &DeriveInput, krate: &TokenStream2) -> syn::Result<TokenStream2>
     let mut from_config = Vec::new();
     let mut exempt = Vec::new();
     let mut marked: Vec<(String, Path)> = Vec::new();
+    let mut exempted: Vec<(String, Path)> = Vec::new();
     for variant in &data.variants {
         let ident = &variant.ident;
         let mut role: Option<Path> = None;
@@ -561,6 +566,12 @@ fn gated(input: &DeriveInput, krate: &TokenStream2) -> syn::Result<TokenStream2>
                 Self::#ident { .. } => <__LezRole as #krate::Role>::NAME == <#role as #krate::Role>::NAME,
             });
         }
+        if let Some(marker) = &exempt_from {
+            let named = key(marker);
+            if !exempted.iter().any(|(seen, _)| *seen == named) {
+                exempted.push((named, marker.clone()));
+            }
+        }
         for marker in role.iter().chain(&exempt_from) {
             let named = key(marker);
             if !marked.iter().any(|(seen, _)| *seen == named) {
@@ -603,9 +614,16 @@ fn gated(input: &DeriveInput, krate: &TokenStream2) -> syn::Result<TokenStream2>
             const MARKED: &'static [&'static str] = &[#(<#roles as #krate::Role>::NAME),*];
         }
     });
+    let exempted = (!exempted.is_empty()).then(|| {
+        let roles = exempted.iter().map(|(_, role)| role);
+        quote! {
+            const EXEMPTED: &'static [&'static str] = &[#(<#roles as #krate::Role>::NAME),*];
+        }
+    });
     Ok(quote! {
         impl #impl_generics #krate::Gated for #name #type_generics #where_clause {
             #marked
+            #exempted
             #needs
             #from_config
             #exempt
@@ -959,6 +977,10 @@ mod tests {
         );
         assert!(
             expanded.contains("const_:()=::core::assert!(<(Admin,Freeze,)as::lez_authority::Roles<Config,Message>>::MARKS_LISTED"),
+            "{expanded}"
+        );
+        assert!(
+            expanded.contains("const_:()=::core::assert!(<(Admin,Freeze,)as::lez_authority::Roles<Config,Message>>::EXEMPTIONS_REFUSE"),
             "{expanded}"
         );
     }

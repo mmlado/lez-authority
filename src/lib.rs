@@ -89,8 +89,12 @@ pub enum AuthorityError {
     NotFromConfig,
     /// A handler sent a library message to the config account.
     LibrarySend,
+    /// A request for clearance came from outside this program.
+    ClearanceFromOutside,
     /// Init came for a role whose holder is only ever appointed by nomination.
     ByNominationOnly,
+    /// A request for clearance arrived somewhere other than the config account.
+    ClearanceNotAtConfig,
     /// A refusal of a role's own, printed with its crate's prefix.
     Role {
         /// The role crate's name, the prefix of the text.
@@ -104,7 +108,7 @@ pub enum AuthorityError {
 
 impl AuthorityError {
     /// Every refusal of the engine's own, for the table test.
-    pub const ALL: [Self; 21] = [
+    pub const ALL: [Self; 23] = [
         Self::NotInitialized,
         Self::ConfigDoesNotDecode,
         Self::MessageDoesNotDecode,
@@ -125,7 +129,9 @@ impl AuthorityError {
         Self::SlotChanged,
         Self::NotFromConfig,
         Self::LibrarySend,
+        Self::ClearanceFromOutside,
         Self::ByNominationOnly,
+        Self::ClearanceNotAtConfig,
     ];
 
     /// The stable code. Append-only: a number is never reused or renumbered.
@@ -152,7 +158,9 @@ impl AuthorityError {
             Self::SlotChanged => 126,
             Self::NotInstalled => 131,
             Self::LibrarySend => 135,
+            Self::ClearanceFromOutside => 136,
             Self::ByNominationOnly => 137,
+            Self::ClearanceNotAtConfig => 138,
             Self::Role { code, .. } => *code,
         }
     }
@@ -213,6 +221,12 @@ impl AuthorityError {
             Self::LibrarySend => {
                 "a handler must not send a library message to the config account".into()
             }
+            Self::ClearanceFromOutside => {
+                "a request for clearance only comes from this program's own actors".into()
+            }
+            Self::ClearanceNotAtConfig => {
+                "requests for clearance are only handled at the config account".into()
+            }
             Self::ByNominationOnly => {
                 format!("the {prose} is appointed by nomination, never installed")
             }
@@ -261,12 +275,14 @@ pub struct Holder {
     pub via: Option<AccountId>,
 }
 
-/// The sender of a forwarded message, as the guard saw it: the account whose own actor
-/// vouched for it, and the program that reached that actor. Only the guard builds one.
+/// The sender as the guard saw it: the account whose own actor vouched for a forwarded message
+/// and the program that reached that actor, or at a request for clearance the account alone,
+/// since the request does not carry that program. Only the guard builds one.
 #[derive(Clone, Copy, Debug)]
 pub struct Caller {
     account: AccountId,
     via: Option<AccountId>,
+    via_known: bool,
 }
 
 impl Caller {
@@ -276,7 +292,8 @@ impl Caller {
         self.account
     }
 
-    /// The program that reached the sender's actor, or `None` at top level.
+    /// The program that reached the sender's actor, or `None` at top level. At a request for
+    /// clearance it is `None` too, whatever program reached the actor.
     #[must_use]
     pub fn via(&self) -> Option<AccountId> {
         self.via
@@ -565,7 +582,8 @@ where
 
     /// Whether the role's rules refuse program messages, as a freeze refuses every one while the
     /// program is frozen. The guard asks [`Policy::may_run`] only of a role that sets it, so rules
-    /// a role does not declare here are never asked. A guard takes one such role at most, since a
+    /// a role does not declare here are never asked: at the config, and for a program message
+    /// handled at another actor of the program, through a request for clearance to the config. A guard takes one such role at most, since a
     /// request for clearance names no role (ADR-0005), and two do not compile:
     ///
     /// ```compile_fail,E0080
@@ -668,11 +686,20 @@ where
         Err(Refusal::of::<Self>(AuthorityError::MessageDoesNotDecode))
     }
 
-    /// Whether a program message may run at the config under the role's rules, as a freeze
-    /// refuses every one while the program is frozen. The guard asks it of a role that sets
-    /// [`Policy::REFUSES_MESSAGES`], after the holders the message needs, and not for a message
-    /// marked `#[exempt(Self)]`. A management operation
-    /// never reaches it, so the role's operations always run. By default every message may run.
+    /// Whether a program message may run under the role's rules, as a freeze refuses every one
+    /// while the program is frozen. The guard asks it of a role that sets
+    /// [`Policy::REFUSES_MESSAGES`]: at the config, after the holders the message needs and
+    /// before the handler, and for a message handled at another actor of the program, at its
+    /// request for clearance after the handler. It is not asked for a message marked
+    /// `#[exempt(Self)]`, and a management operation never reaches it, so the role's operations
+    /// always run. By default every message may run.
+    ///
+    /// At the config, `ctx.caller()` is the sender of a message that came through its seat, and
+    /// none for one sent straight to the config. At a request for clearance it is the sending
+    /// actor's account, with no `via`, when that account authorized the transaction, whoever
+    /// sent the message there, and none when it did not. So a credit at the actor of a
+    /// recipient that signed the transaction has the recipient as its caller. [`Ctx::check`]
+    /// refuses at a clearance, since the `via` is unknown there.
     ///
     /// # Errors
     /// The refusal that stops the message.
@@ -764,6 +791,19 @@ pub enum LibraryMessage {
     },
     /// The hop from a seat to the config.
     Forwarded(Forwarded),
+    /// A request for clearance, from the actor of the program that handled a program message to
+    /// the config.
+    Clearance(Clearance),
+}
+
+/// What a request for clearance says: only whether the sending actor's own account authorized
+/// the transaction. The config takes the account from the sender, since a private actor's call
+/// blinds the sender but not the body.
+#[derive(BorshSerialize, BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Clearance {
+    /// Whether the sending actor's account authorized the transaction, as the runtime says at
+    /// that actor, whoever sent the message there.
+    pub authorized: bool,
 }
 
 /// The first byte of a library message. A program's message enum must stay below 255
@@ -906,6 +946,52 @@ pub trait Gated {
     /// goes unchecked.
     const MARKED: &'static [&'static str] = &[];
 
+    /// The names of the roles this enum's `#[exempt]` markers name, each of which the guard
+    /// checks at compile time refuses program messages. The derive fills it. A hand-written impl
+    /// that leaves it empty goes unchecked. An exemption from a role that refuses nothing does
+    /// not compile:
+    ///
+    /// ```compile_fail,E0080
+    /// use borsh::{BorshDeserialize, BorshSerialize};
+    /// use lee_core::program::{ReceiveInput, Response};
+    /// use lez_authority::{AuthoritySlot, Gated, HasSlot, InitGate, Policy, Role, Wire};
+    ///
+    /// struct Owner;
+    ///
+    /// impl Role for Owner {
+    ///     const NAME: &'static str = "owner";
+    ///     type Slot = AuthoritySlot;
+    /// }
+    ///
+    /// impl<C: HasSlot<Owner>> Policy<C> for Owner {}
+    ///
+    /// #[derive(Default, BorshSerialize, BorshDeserialize, HasSlot)]
+    /// struct Config {
+    ///     #[slot(Owner)]
+    ///     owner: AuthoritySlot,
+    /// }
+    ///
+    /// #[derive(BorshSerialize, BorshDeserialize, Gated)]
+    /// enum Message {
+    ///     #[exempt(Owner)]
+    ///     Ping,
+    /// }
+    ///
+    /// fn handle(input: &ReceiveInput, message: Wire<Message>) -> Response {
+    ///     let seed = lez_authority::seed(b"owner-exempt");
+    ///     lez_authority::guard::<(Owner,), Config, Message>(
+    ///         input,
+    ///         &seed,
+    ///         InitGate::Deployer,
+    ///         message,
+    ///         |_, _| Response::keep_state(),
+    ///     )
+    /// }
+    ///
+    /// let _reified: fn(&ReceiveInput, Wire<Message>) -> Response = handle;
+    /// ```
+    const EXEMPTED: &'static [&'static str] = &[];
+
     /// Whether this message needs role `R`'s holder. The guard then takes it only through
     /// the sender's own actor and checks the holder before the handler runs. A message that
     /// needs two roles needs one caller holding both.
@@ -942,12 +1028,18 @@ impl Ctx {
     }
 
     /// Whether the message came through the sender's own actor and the sender holds role
-    /// `R` in `slot`.
+    /// `R` in `slot`. At a request for clearance it refuses, since the program that reached
+    /// the sender's actor is unknown there.
     ///
     /// # Errors
     /// `NotThroughSeat`, or the slot's refusal of the sender, naming `R`.
     pub fn check<R: Role>(&self, slot: &AuthoritySlot) -> Result<(), Refusal> {
-        slot.check(self.vouched::<R>()?).map_err(Refusal::of::<R>)
+        let caller = self.vouched::<R>()?;
+        // A request for clearance carries no via, so the holder's via cannot be compared.
+        if !caller.via_known {
+            return Err(Refusal::of::<R>(AuthorityError::NotThroughSeat));
+        }
+        slot.check(caller).map_err(Refusal::of::<R>)
     }
 
     fn vouched<R: Role>(&self) -> Result<&Caller, Refusal> {
@@ -1094,6 +1186,44 @@ where
     }
 }
 
+/// Whether every name in `exempted` is the name of a role that refuses program messages.
+const fn exemptions_refuse(names: &[&str], refuses: &[bool], exempted: &[&str]) -> bool {
+    let mut e = 0;
+    while e < exempted.len() {
+        let mut n = 0;
+        while n < names.len() && !(refuses[n] && same(names[n], exempted[e])) {
+            n += 1;
+        }
+        if n == names.len() {
+            return false;
+        }
+        e += 1;
+    }
+    true
+}
+
+/// Whether role `R` refuses program messages and `message` is not exempt from it.
+fn asks<R, C, M>(message: &M) -> bool
+where
+    R: Policy<C>,
+    C: HasSlot<R>,
+    M: Gated,
+{
+    R::REFUSES_MESSAGES && !message.exempt::<R>()
+}
+
+/// Role `R`'s answer to a request for clearance, if it refuses program messages.
+fn clears<R, C>(ctx: &Ctx, config: &C) -> Result<(), Refusal>
+where
+    R: Policy<C>,
+    C: HasSlot<R>,
+{
+    if R::REFUSES_MESSAGES {
+        R::may_run(ctx, config)?;
+    }
+    Ok(())
+}
+
 /// Whether every name in `marked` is one of `names`.
 const fn listed(names: &[&str], marked: &[&str]) -> bool {
     let mut m = 0;
@@ -1154,6 +1284,10 @@ pub trait Roles<C, M>: sealed::Sealed {
     /// Whether one role at most refuses program messages, which the guard checks at compile time.
     #[doc(hidden)]
     const AT_MOST_ONE_REFUSES: bool;
+    /// Whether every role an `#[exempt]` marker names refuses program messages, which the guard
+    /// checks at compile time.
+    #[doc(hidden)]
+    const EXEMPTIONS_REFUSE: bool;
     /// The place in the tuple of the role with this name.
     #[doc(hidden)]
     fn index(name: &str) -> Option<usize>;
@@ -1176,6 +1310,13 @@ pub trait Roles<C, M>: sealed::Sealed {
     /// Refuses a slot in `after` that differs from the same slot in `before`.
     #[doc(hidden)]
     fn unchanged(after: &C, before: &C) -> Result<(), Refusal>;
+    /// Whether a message handled away from the config asks it for clearance: a role refuses
+    /// program messages and the message is not exempt from it.
+    #[doc(hidden)]
+    fn needs_clearance(message: &M) -> bool;
+    /// The answer of the role that refuses program messages to a request for clearance.
+    #[doc(hidden)]
+    fn clear(ctx: &Ctx, config: &C) -> Result<(), Refusal>;
 }
 
 impl<C, M, A> Roles<C, M> for (A,)
@@ -1190,6 +1331,8 @@ where
     const MARKS_LISTED: bool = listed(&[A::NAME], M::MARKED);
     const NAMES_DISTINCT: bool = true;
     const AT_MOST_ONE_REFUSES: bool = true;
+    const EXEMPTIONS_REFUSE: bool =
+        exemptions_refuse(&[A::NAME], &[A::REFUSES_MESSAGES], M::EXEMPTED);
 
     fn index(name: &str) -> Option<usize> {
         (name == A::NAME).then_some(0)
@@ -1218,6 +1361,14 @@ where
     fn unchanged(after: &C, before: &C) -> Result<(), Refusal> {
         unchanged::<A, C>(after, before)
     }
+
+    fn needs_clearance(message: &M) -> bool {
+        asks::<A, C, M>(message)
+    }
+
+    fn clear(ctx: &Ctx, config: &C) -> Result<(), Refusal> {
+        clears::<A, C>(ctx, config)
+    }
 }
 
 impl<C, M, A, B> Roles<C, M> for (A, B)
@@ -1233,6 +1384,11 @@ where
     const MARKS_LISTED: bool = listed(&[A::NAME, B::NAME], M::MARKED);
     const NAMES_DISTINCT: bool = !same(A::NAME, B::NAME);
     const AT_MOST_ONE_REFUSES: bool = !(A::REFUSES_MESSAGES && B::REFUSES_MESSAGES);
+    const EXEMPTIONS_REFUSE: bool = exemptions_refuse(
+        &[A::NAME, B::NAME],
+        &[A::REFUSES_MESSAGES, B::REFUSES_MESSAGES],
+        M::EXEMPTED,
+    );
 
     fn index(name: &str) -> Option<usize> {
         if name == A::NAME {
@@ -1276,6 +1432,14 @@ where
         unchanged::<A, C>(after, before)?;
         unchanged::<B, C>(after, before)
     }
+    fn needs_clearance(message: &M) -> bool {
+        asks::<A, C, M>(message) || asks::<B, C, M>(message)
+    }
+
+    fn clear(ctx: &Ctx, config: &C) -> Result<(), Refusal> {
+        clears::<A, C>(ctx, config)?;
+        clears::<B, C>(ctx, config)
+    }
 }
 
 /// The config account of a program with this seed.
@@ -1311,6 +1475,10 @@ pub const fn seed(label: &[u8]) -> PdaSeed {
 ///   holder, asks [`Policy::may_run`] of the role that refuses program messages, unless the
 ///   message is exempt from it, runs the handler, and refuses a result that changed a slot.
 /// - A message only the config sends runs only when it came from the config account.
+/// - A program message handled at an actor other than the config, when a role refuses program
+///   messages and the message is not exempt from it, asks the config for clearance: the guard
+///   adds the request to the handler's response, and the config answers it under that role's
+///   rules in the same transaction.
 /// - Anything else runs where it was sent, as in a program without the guard. At the config
 ///   that needs an initialized config and the consent of the role that refuses program
 ///   messages, unless the message is exempt from it, and the slots are checked afterwards.
@@ -1375,6 +1543,10 @@ where
             Rs::MARKS_LISTED,
             "a marker on the message enum names a role that is not among the guard's roles"
         );
+        assert!(
+            Rs::EXEMPTIONS_REFUSE,
+            "an exempt marker names a role that refuses no program messages"
+        );
     }
     let refuse = |error| Refusal {
         role: Rs::ROOT,
@@ -1393,17 +1565,29 @@ where
         }
         Ok(response)
     };
+    // Only the config sees a refusing role's rules, so a message handled elsewhere asks it.
+    let cleared = |response: Response, clearance: bool| {
+        if !clearance {
+            return response;
+        }
+        let request = Wire::<()>::Library(LibraryMessage::Clearance(Clearance {
+            authorized: input.is_authorized,
+        }));
+        response.send_sync(config_actor, &request)
+    };
     match message {
         Wire::Program(message) => {
             if message.only_from_config() {
                 if at_config || !from_config {
                     return Err(refuse(AuthorityError::NotFromConfig));
                 }
-                return handler(input, message);
+                let clearance = Rs::needs_clearance(&message);
+                return handler(input, message).map(|response| cleared(response, clearance));
             }
             if !at_config {
                 if from_config || !Rs::needs_any(&message) {
-                    return handler(input, message);
+                    let clearance = Rs::needs_clearance(&message);
+                    return handler(input, message).map(|response| cleared(response, clearance));
                 }
                 return seat(input, config_actor).map_err(refuse);
             }
@@ -1416,6 +1600,16 @@ where
                 return Err(refuse(AuthorityError::NotThroughSeat));
             }
             seat(input, config_actor).map_err(refuse)
+        }
+        Wire::Library(LibraryMessage::Clearance(request)) => {
+            if !at_config {
+                return Err(refuse(AuthorityError::ClearanceNotAtConfig));
+            }
+            let from = input
+                .from
+                .filter(|_| input.from_own_program())
+                .ok_or_else(|| refuse(AuthorityError::ClearanceFromOutside))?;
+            answer_clearance::<Rs, C, M>(input, program, gate, from, request)
         }
         Wire::Library(LibraryMessage::Forwarded(hop)) => {
             if !at_config {
@@ -1430,6 +1624,7 @@ where
             let caller = Caller {
                 account: from.account_id,
                 via: hop.via,
+                via_known: true,
             };
             let inner: Wire<M> = borsh::from_slice(&hop.inner)
                 .map_err(|_| refuse(AuthorityError::MessageDoesNotDecode))?;
@@ -1439,7 +1634,7 @@ where
                         .ok_or_else(|| refuse(AuthorityError::MessageDoesNotDecode))?;
                     manage::<Rs, C, M>(input, program, gate, caller, role, op)
                 }
-                Wire::Library(LibraryMessage::Forwarded(_)) => {
+                Wire::Library(LibraryMessage::Forwarded(_) | LibraryMessage::Clearance(_)) => {
                     Err(refuse(AuthorityError::MessageDoesNotDecode))
                 }
                 Wire::Program(message) => {
@@ -1531,6 +1726,43 @@ where
         Rs::unchanged(&after, &config)?;
     }
     Ok(response)
+}
+
+/// A request for clearance at the config: the refusing role's answer, with no handler. The
+/// caller is the sending actor's account when it authorized the transaction.
+fn answer_clearance<Rs, C, M>(
+    input: &ReceiveInput,
+    program: AccountId,
+    gate: InitGate,
+    from: Actor,
+    request: Clearance,
+) -> Result<Response, Refusal>
+where
+    Rs: Roles<C, M>,
+    C: BorshSerialize + BorshDeserialize + Default,
+{
+    let refuse = |error| Refusal {
+        role: Rs::ROOT,
+        prose: Rs::ROOT_PROSE,
+        error,
+    };
+    let pre: &[u8] = &input.pre_state;
+    if pre.is_empty() {
+        return Err(refuse(AuthorityError::NotInitialized));
+    }
+    let config: C =
+        borsh::from_slice(pre).map_err(|_| refuse(AuthorityError::ConfigDoesNotDecode))?;
+    let ctx = Ctx {
+        caller: request.authorized.then_some(Caller {
+            account: from.account_id,
+            via: None,
+            via_known: false,
+        }),
+        program,
+        gate,
+    };
+    Rs::clear(&ctx, &config)?;
+    Ok(Response::keep_state())
 }
 
 /// Hop 1, at the sender's own actor: vouch and forward the message as it arrived.

@@ -28,7 +28,10 @@ impl Role for Second {
     type Slot = AuthoritySlot;
 }
 
-impl<C: HasSlot<Second>> Policy<C> for Second {}
+// The messages below are exempt from it, so it declares that it refuses, with no rules yet.
+impl<C: HasSlot<Second>> Policy<C> for Second {
+    const REFUSES_MESSAGES: bool = true;
+}
 
 /// A role that keeps more than its holder, as a freeze authority keeps what it froze.
 struct Third;
@@ -114,6 +117,7 @@ enum ByHand {
 
 impl Gated for ByHand {
     const MARKED: &'static [&'static str] = &[First::NAME, Second::NAME];
+    const EXEMPTED: &'static [&'static str] = &[Second::NAME];
 
     fn needs<R: Role>(&self) -> bool {
         match self {
@@ -150,6 +154,7 @@ fn every_derived_message_declares_what_its_hand_written_twin_does() {
         (Message::MarkExempt, ByHand::MarkExempt),
     ];
     assert_eq!(<Message as Gated>::MARKED, <ByHand as Gated>::MARKED);
+    assert_eq!(<Message as Gated>::EXEMPTED, <ByHand as Gated>::EXEMPTED);
     for (derived, by_hand) in &pairs {
         assert_eq!(
             borsh::to_vec(derived).unwrap(),
@@ -183,8 +188,35 @@ enum ExemptOnly {
 #[test]
 fn a_role_named_only_by_an_exemption_is_marked_too() {
     assert_eq!(<ExemptOnly as Gated>::MARKED, [Second::NAME]);
+    assert_eq!(<ExemptOnly as Gated>::EXEMPTED, [Second::NAME]);
+    assert_eq!(<Message as Gated>::EXEMPTED, [Second::NAME]);
     const {
         assert!(!<(First,) as Roles<Config, ExemptOnly>>::MARKS_LISTED);
+    }
+}
+
+#[derive(Gated)]
+#[allow(dead_code)]
+enum ExemptThird {
+    #[exempt(Third)]
+    Set,
+}
+
+#[derive(Gated)]
+#[allow(dead_code)]
+enum ExemptFirst {
+    #[exempt(First)]
+    Set,
+}
+
+#[test]
+fn an_exemption_from_a_role_that_refuses_nothing_is_caught() {
+    const {
+        assert!(<(First, Second) as Roles<Config, Message>>::EXEMPTIONS_REFUSE);
+        assert!(<(First, Second) as Roles<Config, ExemptFirst>>::MARKS_LISTED);
+        assert!(!<(First, Second) as Roles<Config, ExemptFirst>>::EXEMPTIONS_REFUSE);
+        assert!(<(First, Third) as Roles<Mixed, ExemptThird>>::MARKS_LISTED);
+        assert!(!<(First, Third) as Roles<Mixed, ExemptThird>>::EXEMPTIONS_REFUSE);
     }
 }
 
