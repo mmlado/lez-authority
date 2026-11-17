@@ -133,6 +133,7 @@ where
     C: HasSlot<Freeze> + HasSlot<Admin>,
 {
     const BY_NOMINATION_ONLY: bool = true;
+    const REFUSES_MESSAGES: bool = true;
 
     fn may_nominate(ctx: &Ctx, config: &C) -> Result<(), Refusal> {
         freeze_authority_or_admin(ctx, config)
