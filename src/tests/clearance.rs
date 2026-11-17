@@ -50,18 +50,26 @@ fn clearance(authorized: bool) -> Wire<Halt> {
 
 #[test]
 fn a_message_handled_elsewhere_asks_the_config_for_clearance() {
-    for authorized in [true, false] {
-        let response = at_marked_with(
-            seat_of(KEY),
-            None,
-            authorized,
-            None,
-            Wire::Program(Halt::Open),
-            halt,
-        )
-        .unwrap();
-        assert_eq!(clearance_in(&response), Some(Clearance { authorized }));
+    for from in senders() {
+        for authorized in [true, false] {
+            let response = at_marked_with(
+                seat_of(KEY),
+                from,
+                authorized,
+                None,
+                Wire::Program(Halt::Open),
+                halt,
+            )
+            .unwrap();
+            assert_eq!(clearance_in(&response), Some(Clearance { authorized }));
+        }
     }
+}
+
+/// The senders a message handled away from the config can have, the config apart: a client,
+/// another actor of the program, and an actor of another program.
+fn senders() -> [Option<Actor>; 3] {
+    [None, Some(seat_of(OTHER)), Some(Actor::new(KEY, ELSEWHERE))]
 }
 
 #[test]
@@ -121,30 +129,34 @@ fn the_request_for_clearance_follows_what_the_handler_sent() {
 
 #[test]
 fn an_exempt_message_handled_elsewhere_asks_for_none() {
-    let response = at_marked_with(
-        seat_of(KEY),
-        None,
-        true,
-        None,
-        Wire::Program(Halt::Exempt),
-        halt,
-    )
-    .unwrap();
-    assert_eq!(clearance_in(&response), None);
-    assert!(response.sync_messages.is_empty());
+    for from in senders() {
+        let response = at_marked_with(
+            seat_of(KEY),
+            from,
+            true,
+            None,
+            Wire::Program(Halt::Exempt),
+            halt,
+        )
+        .unwrap();
+        assert_eq!(clearance_in(&response), None);
+        assert!(response.sync_messages.is_empty());
+    }
 }
 
 #[test]
 fn without_a_refusing_role_nothing_asks_for_clearance() {
-    let response = at(
-        seat_of(KEY),
-        None,
-        true,
-        None,
-        Wire::Program(Msg::SetValue(1)),
-    )
-    .unwrap();
-    assert!(response.sync_messages.is_empty());
+    for from in senders() {
+        let response = at(
+            seat_of(KEY),
+            from,
+            true,
+            None,
+            Wire::Program(Msg::SetValue(1)),
+        )
+        .unwrap();
+        assert!(response.sync_messages.is_empty());
+    }
 }
 
 #[test]
