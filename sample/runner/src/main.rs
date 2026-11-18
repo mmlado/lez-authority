@@ -1,9 +1,11 @@
 //! Drives the token sample on a local sequencer and reads the state back after each step: the
 //! admin's `Init`, a mint, the freeze authority appointed, replaced and revoked, a freeze with
 //! no freeze authority refused, a second mint, the freeze authority appointed again, and a mint
-//! by the admin to itself. Then the freeze: the freeze authority freezes the program, a mint is
-//! refused, the admin's notice runs through the freeze, the admin replaces the freeze authority
-//! while frozen, the successor releases, and the admin clears the notice and mints again.
+//! by the admin to itself. Then a transfer between two owners, and one without the config actor
+//! or without the sender's signature, both refused. Then the freeze: the freeze authority
+//! freezes the program, a mint and a transfer are refused, the admin's notice runs through the
+//! freeze, the admin replaces the freeze authority while frozen, the successor releases, the
+//! admin clears the notice and mints again, and a transfer lands.
 //!
 //! Usage: sample-runner <sample.bin> <payer account id>
 
@@ -81,6 +83,10 @@ async fn main() -> Result<()> {
     let freeze = || freeze_op(FreezeOp::Freeze);
     let release = || freeze_op(FreezeOp::Release);
     let notice = |text: &str| -> Wire<Message> { Message::SetNotice(text.to_owned()).into() };
+    let transfer =
+        |to: AccountId, amount: u64| -> Wire<Message> { Message::Transfer { to, amount }.into() };
+    // rc3 runs only declared actors, and both actors of a transfer ask the config for clearance.
+    let between = |from: AccountId, to: AccountId| vec![seat(from), config(), owner(to)];
 
     // The deployer is the program's own account, so the admin's gate lets it through.
     call(&wallet, payer, send(deployer), &admin_op(Op::Init), "init").await?;
@@ -291,6 +297,39 @@ async fn main() -> Result<()> {
     )
     .await?;
 
+    call(
+        &wallet,
+        payer,
+        between(authority, successor),
+        &transfer(successor, 3),
+        "a transfer",
+    )
+    .await?;
+    check_balance(&wallet, program, authority, 5, "after it, the sender").await?;
+    check_balance(&wallet, program, successor, 3, "after it, the recipient").await?;
+    refused(
+        &mut wallet,
+        payer,
+        vec![seat(authority), owner(successor)],
+        &transfer(successor, 3),
+        "which is neither a declared public actor nor private",
+        "a transfer without the config actor",
+    )
+    .await?;
+    check_balance(&wallet, program, authority, 5, "after it, the sender").await?;
+    check_balance(&wallet, program, successor, 3, "after it, the recipient").await?;
+    refused(
+        &mut wallet,
+        payer,
+        vec![owner(authority), config(), owner(successor)],
+        &transfer(successor, 3),
+        "the sender must sign the transfer",
+        "an unsigned transfer",
+    )
+    .await?;
+    check_balance(&wallet, program, authority, 5, "after it, the sender").await?;
+    check_balance(&wallet, program, successor, 3, "after it, the recipient").await?;
+
     refused(
         &mut wallet,
         payer,
@@ -312,7 +351,18 @@ async fn main() -> Result<()> {
         "a mint while frozen",
     )
     .await?;
-    check_balance(&wallet, program, authority, 8, "after it, unchanged").await?;
+    check_balance(&wallet, program, authority, 5, "after it, unchanged").await?;
+    refused(
+        &mut wallet,
+        payer,
+        between(authority, successor),
+        &transfer(successor, 1),
+        "lez-freeze-authority/freeze E217:",
+        "a transfer while frozen",
+    )
+    .await?;
+    check_balance(&wallet, program, authority, 5, "after it, the sender").await?;
+    check_balance(&wallet, program, successor, 3, "after it, the recipient").await?;
     refused(
         &mut wallet,
         payer,
@@ -409,13 +459,23 @@ async fn main() -> Result<()> {
         &wallet,
         program,
         authority,
-        9,
+        6,
         "after the mint after the release",
     )
     .await?;
+    call(
+        &wallet,
+        payer,
+        between(successor, authority),
+        &transfer(authority, 2),
+        "a transfer after the release",
+    )
+    .await?;
+    check_balance(&wallet, program, successor, 1, "after it, the sender").await?;
+    check_balance(&wallet, program, authority, 8, "after it, the recipient").await?;
 
     println!(
-        "all steps behaved. Each refused call carried its code in the wallet's simulation, then was included on chain and changed nothing."
+        "all steps behaved. Each refused call was refused in the wallet's simulation, then included on chain, and changed nothing."
     );
     Ok(())
 }
@@ -455,8 +515,8 @@ async fn call<C: WalletSequencerClient>(
     Ok(())
 }
 
-/// Sends a call the guard must refuse with the text that starts with `needle`: the wallet's
-/// simulation has to report it, then the call goes on chain and is reverted there.
+/// Sends a call that must be refused with a text containing `needle`: the wallet's simulation
+/// has to report it, then the call goes on chain and is reverted there.
 async fn refused<C: WalletSequencerClient>(
     wallet: &mut WalletCore<C>,
     payer: AccountId,

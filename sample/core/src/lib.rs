@@ -52,9 +52,11 @@ pub enum Message {
     #[only(Admin)]
     #[exempt(Freeze)]
     SetNotice(String),
-    /// An owner moves `amount` to `to`. Sent to the owner's own actor and signed by the owner:
-    /// that actor debits the owner and credits `to`'s actor. The credit is a sync message, so a
-    /// private recipient must be an account the sender's wallet proves for, and a transfer to
-    /// another owner's private account cannot be built.
+    /// An owner moves `amount` to `to`. Sent to the owner's own actor by the transaction itself,
+    /// not relayed by another actor, and signed by the owner: that actor debits the owner and
+    /// credits `to`'s actor. A program running in a transaction the owner signed cannot move the
+    /// owner's balance. An owner that cannot sign, such as a PDA, is credited but never sends.
+    /// The credit is a sync message, so a private recipient must be an account the sender's
+    /// wallet proves for, and a transfer to another owner's private account cannot be built.
     Transfer { to: AccountId, amount: u64 },
 }

@@ -2,8 +2,9 @@
 //! PDA of the program id and `CONFIG_SEED`, and holds the admin's slot, the freeze authority's
 //! and the admin's notice. Each owner's balance lives at the owner's own actor under the
 //! program. The admin mints: the config credits the owner's actor. An owner transfers by
-//! sending `Transfer`, signed, to its own actor, which debits it and credits the recipient's
-//! actor. While the program is frozen the mint and the transfer are refused, the transfer
+//! sending `Transfer`, signed, straight from the transaction to its own actor, which debits it
+//! and credits the recipient's actor. An owner that cannot sign, such as a PDA, is credited but
+//! never sends. While the program is frozen the mint and the transfer are refused, the transfer
 //! through the requests for clearance its actors send the config, and the admin's notice,
 //! marked exempt, still runs. The attribute puts the guard in front of the handler, and the
 //! guard runs the admin's and the freeze authority's operations without it. Only the deployer,
@@ -49,6 +50,11 @@ fn handle_message(input: &ReceiveInput, message: Message) -> Response {
         }
         Message::Transfer { to, amount } => {
             assert!(input.is_authorized, "the sender must sign the transfer");
+            // rc3 authorizes per transaction, so a relaying program would act on the signature.
+            assert!(
+                input.from.is_none(),
+                "a transfer is sent by the transaction itself"
+            );
             let mut balance: Balance = state(input);
             balance.amount = balance
                 .amount
@@ -433,6 +439,8 @@ mod tests {
     /// Runs `message` at `to` as the runtime does: the handler over the actor's state, the state
     /// it writes, then each message it sends, depth first. `signers` signed the transaction. The
     /// requests for clearance it answered, as the sending actor's account and the bit it carried.
+    /// It keeps what a refused chain wrote before the refusal, which the runtime reverts, so only
+    /// the live run shows that a refusal writes nothing.
     fn execute(
         states: &mut States,
         to: Actor,
@@ -563,6 +571,8 @@ mod tests {
             Some(actor(STRANGER)),
             Some(Actor::new(STRANGER, STRANGER)),
             Some(config_actor()),
+            Some(Actor::new(OWNER, STRANGER)),
+            Some(actor(OWNER)),
         ] {
             let mut states = states(&appointed(AUTHORITY), &[(OWNER, 5)]);
             let message = borsh::to_vec(&Wire::Program(Message::Transfer {
@@ -583,7 +593,37 @@ mod tests {
                 text.contains("the sender must sign the transfer"),
                 "{from:?}: {text}"
             );
-            assert_eq!(balance(&states, OWNER), 5);
+        }
+    }
+
+    #[test]
+    fn a_signed_transfer_is_refused_when_relayed() {
+        for from in [
+            Some(actor(STRANGER)),
+            Some(Actor::new(STRANGER, STRANGER)),
+            Some(config_actor()),
+            Some(Actor::new(OWNER, STRANGER)),
+            Some(actor(OWNER)),
+        ] {
+            let mut states = states(&appointed(AUTHORITY), &[(OWNER, 5)]);
+            let message = borsh::to_vec(&Wire::Program(Message::Transfer {
+                to: SUCCESSOR,
+                amount: 3,
+            }))
+            .unwrap();
+            let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                execute(&mut states, actor(OWNER), from, &[OWNER], message)
+            }))
+            .expect_err("a relayed transfer is refused");
+            let text = refused
+                .downcast_ref::<&str>()
+                .copied()
+                .or_else(|| refused.downcast_ref::<String>().map(String::as_str))
+                .unwrap_or_default();
+            assert!(
+                text.contains("a transfer is sent by the transaction itself"),
+                "{from:?}: {text}"
+            );
         }
     }
 }
