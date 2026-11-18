@@ -16,7 +16,7 @@ license = "MIT OR Apache-2.0"
 [workspace.dependencies]
 borsh = { version = "1", features = ["derive"] }
 lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone", tag = "v0.4.0-rc3" }
-lez-admin-authority = { git = "https://github.com/mmlado/lez-admin-authority", tag = "v0.2.0" }
+lez-admin-authority = { git = "https://github.com/mmlado/lez-admin-authority", rev = "d8ad550be3bf7e8b3e2b146e96aa24872741e890" }
 lez-freeze-authority = { path = "lez-freeze-authority" }
 program_loader_core = { git = "https://github.com/logos-blockchain/logos-execution-zone", tag = "v0.4.0-rc3" }
 wallet = { git = "https://github.com/logos-blockchain/logos-execution-zone", tag = "v0.4.0-rc3" }
