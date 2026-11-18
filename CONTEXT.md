@@ -29,26 +29,26 @@ The program a holder acts through, or none for a key that signs at top level. A 
 _Avoid_: governance, delegate
 
 **Caller**:
-The sender of a hopped message as the guard saw it: the seat's account and its via. Only the guard builds one.
+The sender of a message as the guard saw it: in a hop, the seat's account and its via, and at a request for clearance, the sending actor's account alone, when that account authorized the transaction. Only the guard builds one.
 _Avoid_: signer, origin
 
 **Slot**:
-One role's place in the config. Unset until a holder is installed, held, or renounced for good.
-_Avoid_: authority config, admin config
+One role's place in the config: its holder, and whatever else the role keeps there, such as the accounts a freeze authority froze. Unset until a holder is installed or a nominee accepts, then held, or renounced for good.
+_Avoid_: authority config, admin config, role state
 
 **Role**:
-What a slot stands for, such as admin. Names the slot in refusals. A program may have more than one, each with its own slot.
+What a slot stands for, such as admin. Names the slot in refusals. A program may have more than one, each with its own name and slot.
 
 **Root role**:
 The first of a program's roles. Its install creates the config, and the guard's own refusals name it.
 _Avoid_: main role, primary role
 
 **Policy**:
-A role's rules: who may install its first holder, who may nominate, who may renounce, and what renounce leaves. A role that answers to nobody keeps the defaults. A role that answers to another, as a freeze authority answers to the admin, reads that role's slot.
+A role's rules: who may install its first holder, who may nominate, who may renounce, what renounce leaves, what the operations it defines for itself do, and whether a program message may run. A role that answers to nobody keeps the defaults. A role that answers to another, as a freeze authority answers to the admin, reads that role's slot.
 _Avoid_: permissions, access rules
 
 **Guard**:
-What runs in front of a program's handler: it forwards at seats, unwraps hops at the config, runs management operations, checks the holders a message declares, and refuses a handler that changed a slot. The guard attribute puts it there.
+What runs in front of a program's handler: it forwards at seats, unwraps hops at the config, runs management operations, checks the holders a message declares, asks the role that refuses program messages whether one may run, and refuses a handler that changed a slot. The guard attribute puts it there.
 _Avoid_: dispatcher, framework, runtime
 
 **Plain handler**:
@@ -60,15 +60,15 @@ What a role's policy sees: the caller, if any, and the program's init gate. The 
 _Avoid_: ctx in prose, session
 
 **Library message**:
-A message of the library's, not the program's: a role's management operation or the hop. It starts with the byte 255, so it travels next to the program's messages without the program's enum hosting it.
+A message of the library's, not the program's: a role's management operation, the hop, or a request for clearance. It starts with the byte 255, so it travels next to the program's messages without the program's enum hosting it.
 _Avoid_: hosted variant, injected instruction (the v0.2 word)
 
 **Management operation**:
-A library message the guard runs on its role's slot, under the role's policy, without the handler: install, nominate, accept, renounce.
+A library message the guard runs at the config under its role's policy, without the handler: install, nominate, accept and renounce on the role's slot, and the operations a role defines for itself, such as a freeze.
 _Avoid_: admin instruction
 
 **Nomination**:
-The holder's standing offer of the role to one account, kept in the slot until that account accepts, the holder replaces or cancels it, or the holder renounces. The all-zero id cancels.
+A standing offer of the role to one account, made under the role's policy and kept in the slot until that account accepts, a later nomination replaces or cancels it, or the slot is renounced. A slot with no holder can carry one when the policy lets someone nominate there. The all-zero id cancels.
 _Avoid_: pending transfer, candidate (the v0.2 word)
 
 **Nominee**:
@@ -80,8 +80,12 @@ What a PDA nominee's accept carries: the seed that, with the program that reache
 _Avoid_: PDA claim
 
 **Open message**:
-A program message that needs no holder. It runs wherever it is sent, as in a program without the guard. At the config it needs an initialized config.
+A program message that needs no holder. It runs wherever it is sent, as in a program without the guard. At the config it needs an initialized config and the consent of the role that refuses program messages, unless it is exempt from it.
 _Avoid_: public message
+
+**Clearance**:
+The config's consent to a program message handled at another actor of the program, asked in the same transaction when one of the program's roles requires it. A refusal reverts the whole transaction, the handler's effects included.
+_Avoid_: admission (LEZ's word for admitting an account to a transaction), freeze check (one role's use of it)
 
 **Gated message**:
 A program message that declares it needs a role's holder. It travels through the sender's seat, and the guard checks the holder at the config before the handler runs.
@@ -90,6 +94,10 @@ _Avoid_: protected, restricted, admin-only (that is the admin crate's case)
 **Config-only message**:
 A program message that only the config account may send, as it does to the program's other actors.
 _Avoid_: internal message, hub message
+
+**Exempt message**:
+A program message its program marked to run where one role's rules would refuse it, as an exempt message runs through a freeze. The mark names the role and covers that message only. It still needs its holders.
+_Avoid_: whitelisted message, carve-out
 
 **Hub**:
 The config account acting for the holder: the handler of a gated message sends to other actors of the program, after the guard verified the holder once.

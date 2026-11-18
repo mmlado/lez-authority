@@ -8,7 +8,18 @@ repository = "https://github.com/mmlado/lez-authority"
 readme = "README.md"
 
 [workspace]
-members = ["macros"]
+members = [
+    "macros",
+    "fixtures/lez-sample-authority",
+    "fixtures/by-name",
+    "fixtures/renamed",
+    "fixtures/inherited",
+    "fixtures/build-script",
+]
+
+# Only fixtures/inherited uses it, to check a role crate renamed in the workspace root.
+[workspace.dependencies]
+inherited-role = { package = "lez-sample-authority", path = "fixtures/lez-sample-authority" }
 
 [dependencies]
 borsh = { version = "1", features = ["derive"] }

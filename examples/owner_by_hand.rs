@@ -1,8 +1,6 @@
 //! The README's program without the macros: the impls the derives write, and the guard the
 //! attribute puts in front of the handler.
 
-use std::any::TypeId;
-
 use borsh::{BorshDeserialize, BorshSerialize};
 use lee_core::program::{PdaSeed, ReceiveInput, Response};
 use lez_authority::{AuthoritySlot, Gated, HasSlot, InitGate, Policy, Role, Wire};
@@ -12,6 +10,7 @@ pub struct Owner;
 
 impl Role for Owner {
     const NAME: &'static str = "owner";
+    type Slot = AuthoritySlot;
 }
 
 /// The owner answers to nobody, so the default rules hold.
@@ -40,9 +39,11 @@ enum Message {
 }
 
 impl Gated for Message {
+    const MARKED: &'static [&'static str] = &[Owner::NAME];
+
     fn needs<R: Role>(&self) -> bool {
         match self {
-            Message::SetValue(_) => TypeId::of::<R>() == TypeId::of::<Owner>(),
+            Message::SetValue(_) => R::NAME == Owner::NAME,
         }
     }
 }

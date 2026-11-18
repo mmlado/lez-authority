@@ -36,6 +36,7 @@ client   root (C, P)    actors [(C, P)]    signers {}    message an unmarked var
 
 hop 1    (C, P) config  caller = None
                         state present and decodes                  else E101 / E109
+                        may_run of the role that refuses messages, unless exempt   else its code
                         handler(input, message)
                         the handler's write decodes, every slot unchanged   else E109 / E126
                         no message the handler sends is a library message to (C, P)   else E135
@@ -60,6 +61,7 @@ hop 2    (C, P) config  from an actor of P                         else E119
                             Renounced                              E102
                             holder.account != A                    E103
                             holder.via != caller.via               E120
+                        may_run of the role that refuses messages, unless exempt   else its code
                         handler(input, message)
                         the handler's write decodes, every slot unchanged   else E109 / E126
                         no message the handler sends is a library message to (C, P)   else E135
@@ -81,6 +83,25 @@ hop 3    (T, P) target  from == Some((C, P)), by exact actor       else E123
 ```
 
 "From an actor of P" is not enough at hop 3, because any actor of `P` passes it: a stranger's seat could send the same message to a target. The target compares the whole actor. A `#[from_config]` message from a client, from another actor, or at the config itself, is E123. Every actor reached must be in the transaction's actor list, so a client lists the target too. An unmarked message the config sends runs at the target as well, but so would the same message from anyone, which is what the mark is for.
+
+## A message handled away from the config, under a role that refuses
+
+```text
+client   root (A, P)    actors [(A, P), (C, P)]    signers as the program needs    message an unmarked variant, not exempt
+
+hop 1    (A, P) actor   handler(input, message) over the actor's own state
+                        no message the handler sends is a library message to (C, P)   else E135
+                        a role refuses program messages and the message is not exempt from it:
+                            send sync to (C, P): Clearance { authorized: is_authorized }
+
+hop 2    (C, P) config  from an actor of P                         else E136
+                        state present and decodes                  else E101 / E109
+                        caller = { A, via unknown } when A signed the transaction, else none
+                        may_run of the role that refuses messages   else its code
+                        nothing written
+```
+
+The same holds at a target for a message the config sends on, `#[from_config]` or not: the target asks for clearance too, so a client lists `(C, P)` beside every target. The handler runs before the refusal, and a refusal reverts the whole transaction, its effects with it. Authorized means the actor's account signed the transaction, whoever sent the message there, so a credit at the actor of a recipient that signed carries the recipient as its caller. A role's holder check refuses at a clearance (E122), since the via is unknown there. A request for clearance sent anywhere but the config is E138, and one inside a hop does not decode (E108). With no role that refuses program messages, nothing asks.
 
 ## Nominate and cancel
 

@@ -1141,10 +1141,17 @@ dependencies = [
 name = "lez-authority-macros"
 version = "0.2.0"
 dependencies = [
- "proc-macro-crate",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+ "toml_edit",
+]
+
+[[package]]
+name = "lez-sample-authority"
+version = "0.0.0"
+dependencies = [
+ "lez-authority",
 ]
 
 [[package]]
@@ -1390,6 +1397,41 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "program-build-script"
+version = "0.0.0"
+dependencies = [
+ "lez-authority",
+ "lez-sample-authority",
+]
+
+[[package]]
+name = "program-by-name"
+version = "0.0.0"
+dependencies = [
+ "borsh",
+ "lee_core",
+ "lez-sample-authority",
+]
+
+[[package]]
+name = "program-inherited"
+version = "0.0.0"
+dependencies = [
+ "borsh",
+ "lee_core",
+ "lez-sample-authority",
+]
+
+[[package]]
+name = "program-renamed"
+version = "0.0.0"
+dependencies = [
+ "borsh",
+ "lee_core",
+ "lez-sample-authority",
 ]
 
 [[package]]

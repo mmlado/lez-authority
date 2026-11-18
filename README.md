@@ -25,11 +25,12 @@ A message that needs the holder of a role goes to the sender's own actor under t
 client ──────► is_authorized?     hop       from an actor of P?       send      from == (C, P)?
                via = the program ─────────► caller = from.account ──────────► handler(input, message)
                that reached me              holder checks
+                                            the refusing role's may_run
                                             handler(input, message)
                                             slots unchanged?
 ```
 
-Two hops for a message that needs a holder. One for any other message, which runs where it is sent. Three when the handler at the config sends on to another actor of the program. Identity comes from the engine's `from` at every hop, never from a field in the message.
+Two hops for a message that needs a holder. One for any other message, which runs where it is sent, and two when a role refuses program messages, since it then asks the config for clearance. Three when the handler at the config sends on to another actor of the program, and four with that request. Identity comes from the engine's `from` at every hop, never from a field in the message.
 
 A holder is an account together with the program it acts through, its `via`: none for a key that signs at top level, the owning program for a PDA. The guard accepts a caller only when both match ([ADR-0001](docs/adr/0001-per-holder-via.md)).
 
@@ -58,6 +59,7 @@ pub struct Owner;
 
 impl Role for Owner {
     const NAME: &'static str = "owner";
+    type Slot = AuthoritySlot;
 }
 
 /// The owner answers to nobody, so the default rules hold.
@@ -98,18 +100,26 @@ The attribute turns the handler into an inner function and puts `lez_authority::
 
 | Message | Where it runs |
 | --- | --- |
-| A role's operation: `Init`, `Nominate`, `Accept`, `Renounce` | sent to the sender's seat and forwarded. The guard runs it at the config under the role's policy, and the handler never sees it |
-| One marked `#[only(R)]` | sent to the sender's seat and forwarded. At the config the guard checks `R`'s holder, then the handler runs |
+| A role's operation: `Init`, `Nominate`, `Accept`, `Renounce`, or one the role defines for itself | sent to the sender's seat and forwarded. The guard runs it at the config under the role's policy, and the handler never sees it |
+| One marked `#[only(R)]` | sent to the sender's seat and forwarded. At the config the guard checks `R`'s holder and the consent of the role that refuses program messages, unless the message is exempt from it, then the handler runs |
 | One marked `#[from_config]` | at another actor of the program, only when the config account sent it |
-| Anything else | where it is sent, as in a program without the guard |
+| Anything else | where it is sent, as in a program without the guard, and under a role that refuses program messages it asks the config for clearance |
 
-At the config every program message needs an initialized config, and the guard refuses a handler whose write changed a slot. The handler of a message that came through a seat sees `input.from` as the sender's own actor and `input.message` as the hop. Wherever the handler runs, the guard refuses a response that sends the config a library message, which the config would take for a hop from that actor. A client builds a role's operation with `Wire::op::<R>(op)`.
+At the config every program message needs an initialized config and the consent of the role that refuses program messages, unless it is exempt from it, and the guard refuses a handler whose write changed a slot. The handler of a message that came through a seat sees `input.from` as the sender's own actor and `input.message` as the hop. Wherever the handler runs, the guard refuses a response that sends the config a library message, which the config would take for a hop from that actor. A client builds a role's operation with `Wire::op::<R>(op)`.
+
+Away from the config, a program message handled there asks the config for clearance when a role refuses program messages and the message is not exempt from it, whoever sent it, the config included. The guard adds the request to the handler's response, and the config answers it under that role's rules in the same transaction, so a refusal reverts the whole transaction, the handler's effects with it. A client lists the config actor in such a transaction ([ADR-0005](docs/adr/0005-a-message-handled-elsewhere-asks-the-config-for-clearance.md)). A request from a private actor runs at the config as a public segment and adds its crossing to the transaction.
 
 ## Roles
 
-A role is a type with `Role`, which names it in refusals and in a client's operation message, and `Policy<C>`, which says who may install, nominate and renounce, and what renounce leaves. The defaults are the rules of a role that answers to nobody, so such a role implements `Policy` empty, as `Owner` does above. `HasSlot<R>` puts the role's slot in the config.
+A role is a type with `Role`, which names it in refusals and in a client's operation message and gives the type of its slot, and `Policy<C>`, which says who may install, nominate and renounce, what renounce leaves, what the role's own operations do, and which program messages may run. `Role::PROSE_NAME` names the role in a refusal's sentence where its name alone does not read well, as "freeze authority" does for `freeze`. `Policy::BY_NOMINATION_ONLY` marks a role whose holder is only ever appointed by nomination: its `Init` is refused with E137, and the guard attribute refuses a first role with it where `cargo check` sees it, at its `roles(..)`. A guard called by hand is refused at `cargo build`. The defaults are the rules of a role that answers to nobody, defines no operations of its own and lets every program message run, so such a role implements `Policy` empty, as `Owner` does above. `HasSlot<R>` puts the role's slot in the config. A role that keeps only its holder takes `AuthoritySlot` as its slot. One that keeps more, as a freeze authority keeps what it froze, takes a type of its own that implements `Slot`, which hands the guard the `AuthoritySlot` inside it.
+
+A role may define operations of its own, as a freeze authority defines a freeze. A client sends one as `Op::Own`, in the role's own encoding, and the guard runs it at the config as it runs `Nominate`: through the sender's seat, and never before the root role's `Init`. Its bytes run to the end of the message with no length in front, so a client's IDL can describe them as the role's own type. `Policy::operate` decodes them, applies the role's rules and returns the role's slot as the operation leaves it. The guard checks no holder first, so those rules say who may send each operation. The guard writes back that slot alone and keeps its holder part as it was: the holder moves only through `Init`, `Nominate`, `Accept` and `Renounce`. A role that defines none refuses one with E108, a message that does not decode.
+
+A role may also refuse program messages, as a freeze authority refuses every one while the program is frozen. It says so with `Policy::REFUSES_MESSAGES`, and at the config the guard then asks its `Policy::may_run` after the holders a message needs, and before the handler runs. A guard takes one such role at most, and the attribute refuses a second where `cargo check` sees it. Away from the config the guard asks the same rules through a request for clearance, so the role is enforced wherever a program message runs. A message marked `#[exempt(R)]` skips role `R`'s answer, and still needs its holders and leaves the slots alone. A management operation never reaches `may_run`, so a role's operations always run.
 
 A program names its roles in the attribute: `roles(A)` for one, `roles(A, B)` for two. The first is the root. Its `Init` creates the config, and the guard's own refusals name it. A second role that answers to the first overrides the rules that differ and reads the first role's slot through the config, the way a freeze authority answers to the admin. A message may need either role's holder, or both ([ADR-0003](docs/adr/0003-roles-compose-through-traits.md)).
+
+A role crate, one that defines roles for programs to use, is named `lez-<role>-authority` and re-exports this crate at its root as `lez_authority`: with `pub use lez_authority;`, or through the role crate it builds on, as lez-freeze-authority does with `pub use lez_admin_authority::lez_authority;`. The macros find this crate through it, so a program may depend on the role crate alone.
 
 ## The macros
 
@@ -117,9 +127,9 @@ A program names its roles in the attribute: `roles(A)` for one, `roles(A, B)` fo
 | --- | --- | --- |
 | `#[guard(roles(..), config = C, seed = S)]` | the handler | the outer function and the call to `guard`. `genesis = KEY` replaces the deployer gate |
 | `#[derive(HasSlot)]`, `#[slot(R)]` | the config, its slot field | `HasSlot<R>` |
-| `#[derive(Gated)]`, `#[only(R)]`, `#[from_config]` | the message enum, its variants | `Gated` |
+| `#[derive(Gated)]`, `#[only(R)]`, `#[from_config]`, `#[exempt(R)]` | the message enum, its variants | `Gated` |
 
-`#[only]` takes one role. A misplaced marker is a compile error with the reason, such as `a message is either #[only(..)], sent through the sender's seat, or #[from_config], sent by the config`. [`tests/macros.rs`](tests/macros.rs) holds the derives against hand-written impls, and a handler under the attribute against its hand expansion, input by input, refusals included. The macros find this crate through a role crate that re-exports it, so a program that depends on lez-admin-authority alone can use them.
+`#[only]` and `#[exempt]` take one role each, and it must be one of the guard's roles. The guard knows a role by its name, as a client's operation does, so a program's roles need a name each, and a role crate linked twice is still one role. A misplaced marker is a compile error with the reason, such as `a message is either #[only(..)], sent through the sender's seat, or #[from_config], sent by the config`, and the attribute refuses a marker naming a role it does not list where `cargo check` sees it, and an `#[exempt(R)]` naming a role that refuses no program messages. [`tests/macros.rs`](tests/macros.rs) holds the derives against hand-written impls, and a handler under the attribute against its hand expansion, input by input, refusals included. The macros find this crate through a direct dependency on it, or on a role crate (see [Roles](#roles)). They take one that every build links: required dependencies first, then those for a target, then optional ones, then dev-dependencies, and within each of these, this crate ahead of a role crate. A program whose dependencies do not fit the rule depends on this crate directly, at the tag its role crate pins, and the macros take it first. A build script's macros look in its build-dependencies instead. A new role crate needs no change here.
 
 ## The slot
 
@@ -128,6 +138,7 @@ pub enum AuthoritySlot {
     Unset,
     Held { holder: Holder, nominee: Option<AccountId> },
     Renounced,
+    Offered { nominee: AccountId },
 }
 
 pub struct Holder {
@@ -136,14 +147,16 @@ pub struct Holder {
 }
 ```
 
-`Unset` is the default before the first install. `Held` has one holder and at most one standing offer of the role, the nominee. `Renounced` is for good. The four management operations, sent as library messages and run by the guard. The "who" is the default `Policy`:
+`Unset` is the default before the first install. `Held` has one holder and at most one standing offer of the role, the nominee. `Renounced` is for good. `Offered` has no holder yet and a standing offer, which a slot gets where the role's policy lets someone who is not the holder nominate. The four management operations, sent as library messages and run by the guard. The "who" is the default `Policy`:
 
 | Operation | Who | Effect |
 | --- | --- | --- |
-| `Init` | the deployer, or the genesis key, at top level | installs the sender as holder of an unset slot. The root role's `Init` creates the config |
-| `Nominate { next }` | the holder | records the standing offer, the all-zero id cancels it |
+| `Init` | the deployer, or the genesis key, at top level | installs the sender as holder of a slot that has none, keeping a standing offer. The root role's `Init` creates the config |
+| `Nominate { next }` | the holder | records the standing offer, the all-zero id cancels it. On a slot with no holder, where the policy allows it, the offer makes the slot `Offered` |
 | `Accept { pda_seed }` | the nominee, through its own seat | takes the role, a PDA proves itself with the seed that derives it under the program that reached its seat |
-| `Renounce` | the holder | empties the slot, offer included, by default for good |
+| `Renounce` | the holder | resets the holder part, offer included, by default for good. Whatever else the role keeps in its slot stays |
+
+A role's own operations, sent as `Own`, change the rest of its slot under the rules its `Policy::operate` sets, never the holder part.
 
 There is no one-step transfer: a PDA cannot co-sign a transaction, and one shape serves keys and PDAs alike.
 
@@ -151,7 +164,7 @@ There is no one-step transfer: a PDA cannot co-sign a transaction, and one shape
 
 ## Refusals
 
-A refusal is a panic, which is how a handler fails on LEZ. The text is `lez-authority/<role> E<code>: <sentence>`. The LEZ wallet runs a transaction before it sends it and, by default, does not send one that reverts: the text comes back in its `SimulatedRevert` error. A transaction sent anyway is included, reverted, and charged its whole gas limit, the text reaches the sequencer log verbatim, and the client reads the state back. Codes are append-only, a number is never reused or renumbered, and `codes_are_stable` pins the table.
+A refusal is a panic, which is how a handler fails on LEZ. The text is `lez-authority/<role> E<code>: <sentence>`, with the role's name in the prefix and its prose name in the sentence, as in `lez-authority/freeze E103: the signing account is not the freeze authority`. A role crate's own refusals print with that crate's prefix, as in `lez-freeze-authority/freeze E217: the program is frozen`. The LEZ wallet runs a transaction before it sends it and, by default, does not send one that reverts: the text comes back in its `SimulatedRevert` error. A transaction sent anyway is included, reverted, and charged its whole gas limit, the text reaches the sequencer log verbatim, and the client reads the state back. Codes are append-only, a number is never reused or renumbered, and `codes_are_stable` pins the table.
 
 | Code | Refusal | When |
 | --- | --- | --- |
@@ -160,7 +173,7 @@ A refusal is a panic, which is how a handler fails on LEZ. The text is `lez-auth
 | 103 | `NotHolder` | the caller is not the holder |
 | 104 | `MissingSignature` | the sender did not authorize the transaction at its own actor |
 | 107 | `SeedProofFailed` | a nominee reached through a program did not prove itself with the seed that derives it there |
-| 108 | `MessageDoesNotDecode` | a message does not decode, or names a role the program does not have |
+| 108 | `MessageDoesNotDecode` | a message does not decode, names a role the program does not have, or is an operation its role does not define |
 | 109 | `ConfigDoesNotDecode` | the config account's bytes, or the handler's write, do not decode as the config |
 | 113 | `NoNomination` | no nominee is pending |
 | 114 | `NotNominee` | the caller is not the pending nominee |
@@ -175,6 +188,9 @@ A refusal is a panic, which is how a handler fails on LEZ. The text is `lez-auth
 | 126 | `SlotChanged` | the handler's write changed a slot |
 | 131 | `NotInstalled` | the slot holds nobody |
 | 135 | `LibrarySend` | the handler's response sent a library message to the config account |
+| 136 | `ClearanceFromOutside` | a request for clearance from outside the program |
+| 137 | `ByNominationOnly` | `Init` of a role whose holder is only ever appointed by nomination |
+| 138 | `ClearanceNotAtConfig` | a request for clearance arrived somewhere other than the config account |
 
 Numbers up to 116 follow the v0.2 `AdminError` table where a refusal has the same meaning there. The gaps are v0.2 codes with no counterpart here, 132 and 133, retired with the handler context of `v0.1.0-alpha.1`, and 134, dropped before it was released.
 
@@ -191,8 +207,13 @@ Numbers up to 116 follow the v0.2 `AdminError` table where a refusal has the sam
 | The empty config account accepts only the root role's `Init`, under the gate | squatting the config before the deployer installs (E101, E117, E115) |
 | `Init` refuses a held or renounced slot | re-initialization (E118, E102) |
 | A `#[from_config]` message runs only when the config account itself sent it, by exact actor | another actor of the program, or a client, posing as the config (E123) |
-| Only a seat sends the config a library message, wherever the handler runs | an open message at a holder's actor, sent unsigned, whose handler passes a client's bytes on as a hop the config would take for the holder's (E135) |
-| Every slot is compared around the handler | a handler replacing a holder (E126) |
+| Only a seat sends the config a hop, wherever the handler runs | an open message at a holder's actor, sent unsigned, whose handler passes a client's bytes on as a hop the config would take for the holder's (E135) |
+| A program message handled away from the config asks the config for clearance when a role refuses program messages, the guard adding the request after the handler, and the config answers only the program's own actors (E136) | a freeze with a side door, a message at another actor running while the program is frozen, or a handler leaving out its own request |
+| Every slot is compared around the handler | a handler replacing a holder, or changing what a role keeps in its slot (E126) |
+| A role's own operation writes back that role's slot alone, with its holder part kept | an operation reviving a renounced holder, or moving the holder past the nomination, the accept and the seed proof |
+| The `may_run` of the role that sets `REFUSES_MESSAGES` answers at the config for every program message not exempt from it, after the holders, and never for a management operation | a program message running through a freeze at the config, or a freeze stopping its own release |
+| Every role a marker names is one of the guard's roles, checked at compile time, and markers and the guard compare roles by name | an `#[only]` message whose role the guard never asks, running for anyone, such as one marked for the freeze under a guard that lists only the admin, or one marked through a second copy of a role crate |
+| A guard's roles have a name each, checked at compile time | an operation meant for one role running on another role's slot |
 | The seed proof on a PDA accept, and `via` on the holder | a program that inherited a grant accepting on a PDA's behalf (E107), or acting for it later (E120) |
 | Whole-transaction revert | a program whose seeded call fails at the config also loses its own state change |
 
@@ -202,14 +223,14 @@ A PDA holder's grant comes with the call, so the handler, and every program it c
 
 ## What is not here
 
-- A check inside a handler arm, or one that depends on the message's data or the program's state. The guard checks a message by its variant, before the handler, so a conditional rule splits into an open variant and an `#[only(R)]` one.
+- A check inside a handler arm, or one that depends on the message's data or on the program's state outside the roles' slots. The guard checks a message by its variant and by what the roles keep in their slots, before the handler, so a conditional rule splits into an open variant and an `#[only(R)]` one.
 - The root role's `Init` with the program's own settings. It writes the config's `Default` with the holder installed, so make the default a safe state and set the rest with `#[only(R)]` messages.
 - Private holders and private config accounts.
 - Client code beyond `Wire::op`. The admin repo's runner is the reference client.
 
 ## Versioning and stability
 
-Semantic versioning covers the public Rust API, the Borsh encodings of `AuthoritySlot`, `Holder`, `Op`, `Forwarded` and `LibraryMessage`, the byte 255 that marks a library message, and the refusal codes with their meaning. The slot lives inside the program's own config, and the library messages travel next to the program's. While the version is 0.x, a minor bump may change any of them, and each such change is called out in the [changelog](CHANGELOG.md).
+Semantic versioning covers the public Rust API, the Borsh encodings of `AuthoritySlot`, `Holder`, `Op` (whose `Own` bytes carry no length and run to the end of the message), `Forwarded` and `LibraryMessage`, the byte 255 that marks a library message, the refusal codes with their meaning, and the naming rule by which the macros find this crate through a role crate. Items hidden from the docs are not covered, since they serve the guard and its macros and change with them. The slot lives inside the program's own config, and the library messages travel next to the program's. While the version is 0.x, a minor bump may change any of them, and each such change is called out in the [changelog](CHANGELOG.md).
 
 The `lee_core` dependency pins logos-execution-zone at its `v0.4.0-rc3` tag. A consumer must pin the same tag, spelt the same way: cargo treats a tag and a rev as different sources even when they point at the same commit, and two copies of `lee_core` do not compile. Every re-pin is a minor release.
 

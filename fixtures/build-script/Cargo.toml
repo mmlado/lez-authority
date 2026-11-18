@@ -1,0 +1,14 @@
+[package]
+name = "program-build-script"
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "A build script away from build.rs that reaches the engine under another name, beside a lib that reaches it through a role crate"
+build = "build/gen-messages.rs"
+
+[dependencies]
+lez-sample-authority = { path = "../lez-sample-authority" }
+
+[build-dependencies]
+engine = { package = "lez-authority", path = "../.." }

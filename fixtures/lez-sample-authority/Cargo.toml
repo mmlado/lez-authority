@@ -1,0 +1,10 @@
+[package]
+name = "lez-sample-authority"
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "A role crate for the engine's own tests, found by the naming rule"
+
+[dependencies]
+lez-authority = { path = "../.." }
