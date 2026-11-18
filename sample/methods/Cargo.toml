@@ -14,3 +14,12 @@ risc0-build = "3.0.5"
 
 [package.metadata.risc0]
 methods = [".."]
+
+# For tests/overhead.rs only: the host executor that runs the guest and counts cycles.
+[dev-dependencies]
+borsh = { version = "1", features = ["derive"] }
+lee = { git = "https://github.com/logos-blockchain/logos-execution-zone", tag = "v0.4.0-rc3" }
+lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone", tag = "v0.4.0-rc3" }
+lez-freeze-authority = { path = "../../lez-freeze-authority" }
+risc0-zkvm = { version = "3.0.5", default-features = false, features = ["std", "client"] }
+sample_core = { path = "../core" }

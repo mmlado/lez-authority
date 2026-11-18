@@ -1,8 +1,9 @@
 //! Drives the token sample on a local sequencer and reads the state back after each step: the
 //! admin's `Init`, a mint, the freeze authority appointed, replaced and revoked, a freeze with
 //! no freeze authority refused, a second mint, the freeze authority appointed again, and a mint
-//! by the admin to itself. Then a transfer between two owners, and one without the config actor
-//! or without the sender's signature, both refused. Then the freeze: the freeze authority
+//! by the admin to itself. Then a transfer between two owners, the wallet's measure of a transfer
+//! of 1 between the same owners with and without the config actor, and a transfer without the config actor or
+//! without the sender's signature, both refused. Then the freeze: the freeze authority
 //! freezes the program, a mint and a transfer are refused, the admin's notice runs through the
 //! freeze, the admin replaces the freeze authority while frozen, the successor releases, the
 //! admin clears the notice and mints again, and a transfer lands.
@@ -16,11 +17,12 @@ use lez_freeze_authority::{
 };
 use sample_core::{Balance, CONFIG_SEED, Config, Message, config_account};
 use wallet::{
-    AccountIdentity, AccountMention, DeclaredFee, ExecutionFailureKind, WalletCore,
+    AccountIdentity, AccountMention, DeclaredFee, DryRunReport, ExecutionFailureKind, WalletCore,
     WalletSequencerClient, program_facades::program_loader::ProgramLoader,
 };
 
 const NOTICE: &str = "frozen for review";
+const UNDECLARED: &str = "which is neither a declared public actor nor private";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -307,12 +309,30 @@ async fn main() -> Result<()> {
     .await?;
     check_balance(&wallet, program, authority, 5, "after it, the sender").await?;
     check_balance(&wallet, program, successor, 3, "after it, the recipient").await?;
+    measure(
+        &mut wallet,
+        payer,
+        between(authority, successor),
+        &transfer(successor, 1),
+        None,
+        "measure a transfer",
+    )
+    .await?;
+    measure(
+        &mut wallet,
+        payer,
+        vec![seat(authority), owner(successor)],
+        &transfer(successor, 1),
+        Some(UNDECLARED),
+        "measure it without the config actor",
+    )
+    .await?;
     refused(
         &mut wallet,
         payer,
         vec![seat(authority), owner(successor)],
         &transfer(successor, 3),
-        "which is neither a declared public actor nor private",
+        UNDECLARED,
         "a transfer without the config actor",
     )
     .await?;
@@ -544,6 +564,55 @@ async fn refused<C: WalletSequencerClient>(
     let sent = call(wallet, payer, accounts, message, what).await;
     wallet.set_allow_revert(false);
     sent
+}
+
+/// Simulates a call without sending it and prints what the wallet measured: the cycles, or for
+/// a revert the whole budget it is charged, the transaction's wire size and its fee at the head.
+/// `reverts` is the text it must revert with.
+async fn measure<C: WalletSequencerClient>(
+    wallet: &mut WalletCore<C>,
+    payer: AccountId,
+    accounts: Vec<AccountMention>,
+    message: &Wire<Message>,
+    reverts: Option<&str>,
+    what: &str,
+) -> Result<()> {
+    let bytes = borsh::to_vec(message)?;
+    wallet.set_dry_run(true);
+    let sent = wallet
+        .send_pub_tx_paid_by(accounts, 0, bytes, Some(payer))
+        .await;
+    wallet.set_dry_run(false);
+    let Err(ExecutionFailureKind::DryRun(report)) = sent else {
+        return Err(anyhow!("{what}: expected a dry run, got {sent:?}"));
+    };
+    let DryRunReport::Public {
+        cycles,
+        wire_bytes,
+        fee_at_head,
+        revert_reason,
+        ..
+    } = *report
+    else {
+        return Err(anyhow!("{what}: expected a public dry run, got {report:?}"));
+    };
+    match (reverts, &revert_reason) {
+        (None, None) => {}
+        (Some(needle), Some(reason)) if reason.contains(needle) => {}
+        _ => {
+            return Err(anyhow!(
+                "{what}: expected a revert with {reverts:?}, got {revert_reason:?}"
+            ));
+        }
+    }
+    if reverts.is_some() {
+        println!(
+            "{what}: reverts, charged the whole budget of {cycles}, {wire_bytes} wire bytes, fee at head {fee_at_head}"
+        );
+    } else {
+        println!("{what}: {cycles} cycles, {wire_bytes} wire bytes, fee at head {fee_at_head}");
+    }
+    Ok(())
 }
 
 /// The gas the wallet measured and declared for its last send.
