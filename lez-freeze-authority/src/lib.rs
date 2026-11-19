@@ -17,6 +17,7 @@ pub use lez_authority::{
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use lee_core::account::AccountId;
+use lee_core::program::SyncMessage;
 use lez_authority::Ctx;
 
 /// The freeze role. Its holder, the freeze authority, is only ever appointed by nomination: the
@@ -173,7 +174,11 @@ where
         AuthoritySlot::Unset
     }
 
-    fn operate(ctx: &Ctx, config: &C, op: &[u8]) -> Result<FreezeSlot, Refusal> {
+    fn operate(
+        ctx: &Ctx,
+        config: &C,
+        op: &[u8],
+    ) -> Result<(FreezeSlot, Vec<SyncMessage>), Refusal> {
         let op: FreezeOp = borsh::from_slice(op)
             .map_err(|_| Refusal::of::<Freeze>(AuthorityError::MessageDoesNotDecode))?;
         let slot = HasSlot::<Freeze>::slot(config);
@@ -203,10 +208,10 @@ where
                 }
             }
         }
-        Ok(slot)
+        Ok((slot, Vec::new()))
     }
 
-    fn may_run(ctx: &Ctx, config: &C) -> Result<(), Refusal> {
+    fn may_run(ctx: &Ctx, config: &C) -> Result<Vec<SyncMessage>, Refusal> {
         let slot = HasSlot::<Freeze>::slot(config);
         if slot.frozen {
             return Err(Refusal::of::<Freeze>(FreezeError::Frozen.into()));
@@ -220,7 +225,7 @@ where
         if frozen_caller {
             return Err(Refusal::of::<Freeze>(FreezeError::AccountFrozen.into()));
         }
-        Ok(())
+        Ok(Vec::new())
     }
 }
 
