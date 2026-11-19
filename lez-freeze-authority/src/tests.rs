@@ -14,7 +14,7 @@ const MULTISIG: AccountId = AccountId::new([0xB0; 32]);
 const GOVERNANCE: AccountId = AccountId::new([0xC0; 32]);
 const SEED: PdaSeed = seed(b"lez-freeze-authority/tests/v1");
 
-#[derive(Debug, Default, PartialEq, Eq, BorshSerialize, BorshDeserialize, HasSlot)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, BorshSerialize, BorshDeserialize, HasSlot)]
 struct Config {
     #[slot(Admin)]
     admin: AuthoritySlot,
@@ -154,6 +154,28 @@ fn release() -> Wire<Message> {
     freeze_op(FreezeOp::Release)
 }
 
+fn freeze_account(account: AccountId) -> Wire<Message> {
+    freeze_op(FreezeOp::FreezeAccount { account })
+}
+
+fn release_account(account: AccountId) -> Wire<Message> {
+    freeze_op(FreezeOp::ReleaseAccount { account })
+}
+
+/// `config` with `accounts` as the frozen accounts.
+fn with_frozen(mut config: Config, accounts: &[AccountId]) -> Config {
+    config.freeze.frozen_accounts = accounts.to_vec();
+    config
+}
+
+/// An id set only in its first and last bytes, so ids can differ past their first byte.
+fn id(first: u8, last: u8) -> AccountId {
+    let mut bytes = [0; 32];
+    bytes[0] = first;
+    bytes[31] = last;
+    AccountId::new(bytes)
+}
+
 /// `config` with the program frozen.
 fn frozen(mut config: Config) -> Config {
     config.freeze.frozen = true;
@@ -182,11 +204,15 @@ fn e208() -> Refusal {
 
 #[test]
 fn the_freeze_codes_are_stable() {
-    let expected: [(FreezeError, u16); 4] = [
+    let expected: [(FreezeError, u16); 8] = [
         (FreezeError::NotAdminOrFreezeAuthority, 208),
         (FreezeError::AlreadyFrozen, 211),
         (FreezeError::NotFrozen, 212),
+        (FreezeError::AccountAlreadyFrozen, 213),
+        (FreezeError::AccountNotFrozen, 214),
         (FreezeError::Frozen, 217),
+        (FreezeError::AccountFrozen, 218),
+        (FreezeError::ZeroAccount, 225),
     ];
     for (error, code) in expected {
         assert_eq!(error.code(), code, "{error:?}");
@@ -205,8 +231,24 @@ fn the_freeze_codes_are_stable() {
         "lez-freeze-authority/freeze E212: the program is not frozen"
     );
     assert_eq!(
+        Refusal::of::<Freeze>(FreezeError::AccountAlreadyFrozen.into()).text(),
+        "lez-freeze-authority/freeze E213: the account is already frozen"
+    );
+    assert_eq!(
+        Refusal::of::<Freeze>(FreezeError::AccountNotFrozen.into()).text(),
+        "lez-freeze-authority/freeze E214: the account is not frozen"
+    );
+    assert_eq!(
         e217().text(),
         "lez-freeze-authority/freeze E217: the program is frozen"
+    );
+    assert_eq!(
+        Refusal::of::<Freeze>(FreezeError::AccountFrozen.into()).text(),
+        "lez-freeze-authority/freeze E218: the signing account is frozen"
+    );
+    assert_eq!(
+        Refusal::of::<Freeze>(FreezeError::ZeroAccount.into()).text(),
+        "lez-freeze-authority/freeze E225: the all-zero id names no account"
     );
 }
 
@@ -615,8 +657,14 @@ fn the_freeze_slot_reads_back_its_flag_and_its_accounts() {
 #[test]
 fn a_freeze_operation_travels_as_the_freeze_role_s_own_operation() {
     let role = borsh::to_vec("freeze").unwrap();
-    for (message, op) in [(freeze(), 0), (release(), 1)] {
-        let expected = [&[lez_authority::LIBRARY_TAG, 0][..], &role, &[4, op]].concat();
+    let id = borsh::to_vec(&STRANGER).unwrap();
+    for (message, op) in [
+        (freeze(), vec![0]),
+        (release(), vec![1]),
+        (freeze_account(STRANGER), [&[2][..], &id].concat()),
+        (release_account(STRANGER), [&[3][..], &id].concat()),
+    ] {
+        let expected = [&[lez_authority::LIBRARY_TAG, 0][..], &role, &[4], &op].concat();
         assert_eq!(borsh::to_vec(&message).unwrap(), expected);
     }
 }
@@ -645,8 +693,15 @@ fn only_the_freeze_authority_freezes_and_releases() {
     let not_holder = Refusal::of::<Freeze>(AuthorityError::NotHolder);
     let pending = || send(AUTHORITY, &config(holder(AUTHORITY)), nominate(SUCCESSOR)).unwrap();
     for anyone in [ADMIN, STRANGER, SUCCESSOR] {
-        for pre in [pending(), frozen(pending())] {
-            for op in [freeze(), release()] {
+        for pre in [pending(), frozen(with_frozen(pending(), &[STRANGER]))] {
+            for op in [
+                freeze(),
+                release(),
+                freeze_account(SUCCESSOR),
+                freeze_account(STRANGER),
+                freeze_account(AccountId::default()),
+                release_account(STRANGER),
+            ] {
                 assert_eq!(send(anyone, &pre, op), Err(not_holder.clone()));
             }
         }
@@ -665,8 +720,16 @@ fn with_no_freeze_authority_nobody_freezes_or_releases() {
         AuthoritySlot::Offered { nominee: AUTHORITY },
     ] {
         for anyone in [ADMIN, AUTHORITY] {
-            for pre in [config(slot.clone()), frozen(config(slot.clone()))] {
-                for op in [freeze(), release()] {
+            let frozen_all = frozen(with_frozen(config(slot.clone()), &[STRANGER]));
+            for pre in [config(slot.clone()), frozen_all] {
+                for op in [
+                    freeze(),
+                    release(),
+                    freeze_account(SUCCESSOR),
+                    freeze_account(STRANGER),
+                    freeze_account(AccountId::default()),
+                    release_account(STRANGER),
+                ] {
                     assert_eq!(send(anyone, &pre, op), Err(nobody.clone()));
                 }
             }
@@ -687,6 +750,105 @@ fn a_freeze_operation_that_changes_nothing_is_refused() {
     assert_eq!(
         send(AUTHORITY, &config(holder(AUTHORITY)), release()),
         Err(Refusal::of::<Freeze>(FreezeError::NotFrozen.into()))
+    );
+    let one_frozen = with_frozen(config(holder(AUTHORITY)), &[STRANGER]);
+    assert_eq!(
+        send(AUTHORITY, &one_frozen, freeze_account(STRANGER)),
+        Err(Refusal::of::<Freeze>(
+            FreezeError::AccountAlreadyFrozen.into()
+        ))
+    );
+    assert_eq!(
+        send(AUTHORITY, &one_frozen, release_account(SUCCESSOR)),
+        Err(Refusal::of::<Freeze>(FreezeError::AccountNotFrozen.into()))
+    );
+    let three_frozen = with_frozen(config(holder(AUTHORITY)), &[AUTHORITY, STRANGER, ADMIN]);
+    for account in [AUTHORITY, STRANGER, ADMIN] {
+        assert_eq!(
+            send(AUTHORITY, &three_frozen, freeze_account(account)),
+            Err(Refusal::of::<Freeze>(
+                FreezeError::AccountAlreadyFrozen.into()
+            ))
+        );
+    }
+    for account in [SUCCESSOR, ELSEWHERE] {
+        assert_eq!(
+            send(AUTHORITY, &three_frozen, release_account(account)),
+            Err(Refusal::of::<Freeze>(FreezeError::AccountNotFrozen.into()))
+        );
+    }
+}
+
+#[test]
+fn the_freeze_authority_freezes_and_releases_accounts_kept_sorted() {
+    let mut state = valued(frozen(config(holder(AUTHORITY))), 7);
+    let mut expected = Vec::new();
+    for account in [STRANGER, AUTHORITY, ELSEWHERE, SUCCESSOR, ADMIN] {
+        state = send(AUTHORITY, &state, freeze_account(account)).unwrap();
+        expected.push(account);
+        expected.sort();
+        assert_eq!(state.freeze.frozen_accounts(), expected);
+    }
+    assert_eq!(
+        state.freeze.frozen_accounts(),
+        [AUTHORITY, SUCCESSOR, STRANGER, ELSEWHERE, ADMIN]
+    );
+    for account in [SUCCESSOR, ADMIN, AUTHORITY, ELSEWHERE, STRANGER] {
+        state = send(AUTHORITY, &state, release_account(account)).unwrap();
+        expected.retain(|frozen| *frozen != account);
+        assert_eq!(state.freeze.frozen_accounts(), expected);
+    }
+    assert_eq!(state, valued(frozen(config(holder(AUTHORITY))), 7));
+}
+
+#[test]
+fn the_frozen_accounts_follow_the_account_id_s_order() {
+    let mut state = config(holder(AUTHORITY));
+    for account in [id(3, 1), id(1, 9), id(2, 5), id(1, 5)] {
+        state = send(AUTHORITY, &state, freeze_account(account)).unwrap();
+    }
+    assert_eq!(
+        state.freeze.frozen_accounts(),
+        [id(1, 5), id(1, 9), id(2, 5), id(3, 1)]
+    );
+    state = send(AUTHORITY, &state, release_account(id(1, 9))).unwrap();
+    assert_eq!(
+        state.freeze.frozen_accounts(),
+        [id(1, 5), id(2, 5), id(3, 1)]
+    );
+    for account in [id(3, 1), id(1, 5), id(2, 5)] {
+        state = send(AUTHORITY, &state, release_account(account)).unwrap();
+    }
+    assert_eq!(state, config(holder(AUTHORITY)));
+}
+
+#[test]
+fn freezing_an_account_leaves_the_program_s_flag() {
+    for pre in [config(holder(AUTHORITY)), frozen(config(holder(AUTHORITY)))] {
+        let one_frozen = send(AUTHORITY, &pre, freeze_account(STRANGER)).unwrap();
+        assert_eq!(one_frozen, with_frozen(pre.clone(), &[STRANGER]));
+        assert_eq!(
+            send(AUTHORITY, &one_frozen, release_account(STRANGER)),
+            Ok(pre)
+        );
+    }
+}
+
+#[test]
+fn freezing_the_all_zero_id_is_refused_and_the_config_s_own_id_is_not() {
+    let appointed = config(holder(AUTHORITY));
+    assert_eq!(
+        send(AUTHORITY, &appointed, freeze_account(AccountId::default())),
+        Err(Refusal::of::<Freeze>(FreezeError::ZeroAccount.into()))
+    );
+    assert_eq!(
+        send(AUTHORITY, &appointed, release_account(AccountId::default())),
+        Err(Refusal::of::<Freeze>(FreezeError::AccountNotFrozen.into()))
+    );
+    let own = config_actor().account_id;
+    assert_eq!(
+        send(AUTHORITY, &appointed, freeze_account(own)),
+        Ok(with_frozen(appointed.clone(), &[own]))
     );
 }
 
@@ -731,12 +893,50 @@ fn a_pda_freeze_authority_freezes_and_releases_through_its_program_only() {
         send_via(pda, Some(GOVERNANCE), Some(&frozen_program), release()),
         Ok(governed())
     );
+    let one_frozen = with_frozen(governed(), &[STRANGER]);
+    for via in [None, Some(ELSEWHERE)] {
+        for (pre, op) in [
+            (governed(), freeze_account(STRANGER)),
+            (one_frozen.clone(), release_account(STRANGER)),
+        ] {
+            assert_eq!(
+                send_via(pda, via, Some(&pre), op),
+                Err(Refusal::of::<Freeze>(AuthorityError::ViaNotAllowed))
+            );
+        }
+    }
+    assert_eq!(
+        send_via(
+            pda,
+            Some(GOVERNANCE),
+            Some(&governed()),
+            freeze_account(STRANGER)
+        ),
+        Ok(one_frozen.clone())
+    );
+    assert_eq!(
+        send_via(
+            pda,
+            Some(GOVERNANCE),
+            Some(&one_frozen),
+            release_account(STRANGER)
+        ),
+        Ok(governed())
+    );
 }
 
 #[test]
 fn a_freeze_operation_that_does_not_decode_is_refused_in_the_freeze_s_name() {
     for sender in [AUTHORITY, STRANGER] {
-        for bytes in [Vec::new(), vec![9], vec![0, 0]] {
+        let id = borsh::to_vec(&STRANGER).unwrap();
+        for bytes in [
+            Vec::new(),
+            vec![9],
+            vec![0, 0],
+            vec![2],
+            [&[3][..], &id[1..]].concat(),
+            [&[2][..], &id, &[0]].concat(),
+        ] {
             assert_eq!(
                 send(
                     sender,
@@ -837,6 +1037,12 @@ fn every_role_operation_runs_through_a_freeze() {
     assert_eq!(
         send(STRANGER, &replaced, release()),
         Ok(under_successor(holder(STRANGER)))
+    );
+    let one_frozen = send(STRANGER, &replaced, freeze_account(AUTHORITY)).unwrap();
+    assert_eq!(one_frozen, with_frozen(replaced.clone(), &[AUTHORITY]));
+    assert_eq!(
+        send(STRANGER, &one_frozen, release_account(AUTHORITY)),
+        Ok(replaced.clone())
     );
     assert_eq!(
         send(STRANGER, &replaced, renounce()),

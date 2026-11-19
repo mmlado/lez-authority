@@ -73,17 +73,29 @@ pub enum FreezeError {
     AlreadyFrozen,
     /// A release of a program that is not frozen.
     NotFrozen,
+    /// A freeze of an account that is frozen already.
+    AccountAlreadyFrozen,
+    /// A release of an account that is not frozen.
+    AccountNotFrozen,
     /// A program message while the program is frozen.
     Frozen,
+    /// A program message whose caller is a frozen account.
+    AccountFrozen,
+    /// A freeze of the all-zero id.
+    ZeroAccount,
 }
 
 impl FreezeError {
     /// Every refusal, for the table test.
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 8] = [
         Self::NotAdminOrFreezeAuthority,
         Self::AlreadyFrozen,
         Self::NotFrozen,
+        Self::AccountAlreadyFrozen,
+        Self::AccountNotFrozen,
         Self::Frozen,
+        Self::AccountFrozen,
+        Self::ZeroAccount,
     ];
 
     /// The stable code. Append-only: a number is never reused or renumbered.
@@ -93,7 +105,11 @@ impl FreezeError {
             Self::NotAdminOrFreezeAuthority => 208,
             Self::AlreadyFrozen => 211,
             Self::NotFrozen => 212,
+            Self::AccountAlreadyFrozen => 213,
+            Self::AccountNotFrozen => 214,
             Self::Frozen => 217,
+            Self::AccountFrozen => 218,
+            Self::ZeroAccount => 225,
         }
     }
 
@@ -106,7 +122,11 @@ impl FreezeError {
             }
             Self::AlreadyFrozen => "the program is already frozen",
             Self::NotFrozen => "the program is not frozen",
+            Self::AccountAlreadyFrozen => "the account is already frozen",
+            Self::AccountNotFrozen => "the account is not frozen",
             Self::Frozen => "the program is frozen",
+            Self::AccountFrozen => "the signing account is frozen",
+            Self::ZeroAccount => "the all-zero id names no account",
         }
     }
 }
@@ -125,7 +145,8 @@ impl From<FreezeError> for AuthorityError {
 /// renounce leaves the slot unset for the admin to fill again. Once the admin is renounced,
 /// nobody can nominate where the slot has no holder, so an emptied slot stays empty. An offer
 /// standing at that moment can still be accepted, and nobody can withdraw it. Only the freeze
-/// authority freezes and releases, and a freeze operation that would change nothing is refused.
+/// authority freezes and releases, the program or one account, and a freeze operation that would
+/// change nothing is refused.
 /// While the program is frozen, every program message is refused (E217), but for one marked
 /// `#[exempt(Freeze)]`: at the config, and at the program's other actors through their request
 /// for clearance, so a refused message there changes nothing.
@@ -160,6 +181,23 @@ where
             FreezeOp::Release if !slot.frozen => return refuse(FreezeError::NotFrozen),
             FreezeOp::Freeze => slot.frozen = true,
             FreezeOp::Release => slot.frozen = false,
+            FreezeOp::FreezeAccount { account } if account == AccountId::default() => {
+                return refuse(FreezeError::ZeroAccount);
+            }
+            FreezeOp::FreezeAccount { account } => {
+                match slot.frozen_accounts.binary_search(&account) {
+                    Ok(_) => return refuse(FreezeError::AccountAlreadyFrozen),
+                    Err(at) => slot.frozen_accounts.insert(at, account),
+                }
+            }
+            FreezeOp::ReleaseAccount { account } => {
+                match slot.frozen_accounts.binary_search(&account) {
+                    Ok(at) => {
+                        slot.frozen_accounts.remove(at);
+                    }
+                    Err(_) => return refuse(FreezeError::AccountNotFrozen),
+                }
+            }
         }
         Ok(slot)
     }
@@ -216,6 +254,17 @@ pub enum FreezeOp {
     Freeze,
     /// Releases the program. Refused with E212 when it is not frozen.
     Release,
+    /// Freezes one account, whether the program is frozen or not. Refused with E213 when it is
+    /// frozen already, and with E225 for the all-zero id.
+    FreezeAccount {
+        /// The account to freeze.
+        account: AccountId,
+    },
+    /// Releases one account. Refused with E214 when it is not frozen.
+    ReleaseAccount {
+        /// The account to release.
+        account: AccountId,
+    },
 }
 
 /// A client's message for a freeze operation, to send to the sender's own actor. Before the
