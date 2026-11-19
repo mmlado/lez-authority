@@ -1,6 +1,7 @@
 //! What a role is, where its slot lives, its rules, and what those rules see.
 
-use lee_core::account::AccountId;
+use lee_core::account::{AccountId, Actor};
+use lee_core::program::SyncMessage;
 
 use crate::*;
 
@@ -83,15 +84,22 @@ where
     }
 
     /// Runs one of the operations the role defines for itself, from the bytes of
-    /// [`Op::Own`], and returns the role's slot as the operation leaves it. The guard checks no
-    /// holder first, so the role's rules say who may send each operation. The guard writes back
-    /// that slot alone and keeps its holder part as it was: the holder moves only through
-    /// `Init`, `Nominate`, `Accept` and `Renounce`. By default the role defines none, and the
-    /// operation is refused as a message that does not decode.
+    /// [`Op::Own`], and returns the role's slot as the operation leaves it, with the sync
+    /// messages the config sends along with its new state. The guard checks no holder first, so
+    /// the role's rules say who may send each operation. The guard writes back that slot alone
+    /// and keeps its holder part as it was: the holder moves only through `Init`, `Nominate`,
+    /// `Accept` and `Renounce`. It refuses the operation if one of the messages goes to an actor
+    /// of the program (E139), since every actor of the program takes a message from the config as
+    /// already gated. By default the role defines none, and the operation is refused as a
+    /// message that does not decode.
     ///
     /// # Errors
     /// The refusal that stops the operation.
-    fn operate(_ctx: &Ctx, _config: &C, _op: &[u8]) -> Result<Self::Slot, Refusal> {
+    fn operate(
+        _ctx: &Ctx,
+        _config: &C,
+        _op: &[u8],
+    ) -> Result<(Self::Slot, Vec<SyncMessage>), Refusal> {
         Err(Refusal::of::<Self>(AuthorityError::MessageDoesNotDecode))
     }
 
@@ -103,6 +111,13 @@ where
     /// `#[exempt(Self)]`, and a management operation never reaches it, so the role's operations
     /// always run. By default every message may run.
     ///
+    /// Its consent may come with sync messages, which the config sends ahead of the handler's
+    /// own, or alone at a request for clearance. Each runs in the same transaction, so a refusal
+    /// there refuses the message too. A message to an actor of the program among them is refused
+    /// (E139), since every actor of the program takes a message from the config as already
+    /// gated. Like the handler's, the messages carry the grants the config's delivery came
+    /// with.
+    ///
     /// At the config, `ctx.caller()` is the sender of a message that came through its seat, and
     /// none for one sent straight to the config. At a request for clearance it is the sending
     /// actor's account, with no `via`, when that account authorized the transaction, whoever
@@ -112,8 +127,8 @@ where
     ///
     /// # Errors
     /// The refusal that stops the message.
-    fn may_run(_ctx: &Ctx, _config: &C) -> Result<(), Refusal> {
-        Ok(())
+    fn may_run(_ctx: &Ctx, _config: &C) -> Result<Vec<SyncMessage>, Refusal> {
+        Ok(Vec::new())
     }
 }
 
@@ -128,14 +143,20 @@ pub enum InitGate {
 }
 
 /// What a [`Policy`] sees: who is speaking, if the message came through the sender's own
-/// actor, and the program's init gate.
+/// actor, the config's actor, and the program's init gate.
 pub struct Ctx {
     pub(crate) caller: Option<Caller>,
-    pub(crate) program: AccountId,
+    pub(crate) config: Actor,
     pub(crate) gate: InitGate,
 }
 
 impl Ctx {
+    /// The config's actor, which also names the program.
+    #[must_use]
+    pub const fn config(&self) -> Actor {
+        self.config
+    }
+
     /// The sender, when the message came through the sender's own actor.
     #[must_use]
     pub fn caller(&self) -> Option<&Caller> {
@@ -167,7 +188,7 @@ impl Ctx {
     fn passes_gate<R: Role>(&self) -> Result<(), Refusal> {
         let caller = self.vouched::<R>()?;
         let (allowed, refusal) = match self.gate {
-            InitGate::Deployer => (self.program, AuthorityError::NotDeployer),
+            InitGate::Deployer => (self.config.program_account_id, AuthorityError::NotDeployer),
             InitGate::Genesis(key) => (key, AuthorityError::NotGenesis),
         };
         if caller.account != allowed || caller.via.is_some() {

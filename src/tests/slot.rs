@@ -33,7 +33,7 @@ fn run_with(
     let mut config = One(slot);
     let ctx = Ctx {
         caller,
-        program: PROGRAM,
+        config: config_actor(),
         gate,
     };
     run_op::<Hold, One>(&ctx, &mut config, op).map_err(|refusal| {
@@ -53,7 +53,7 @@ fn run(
 
 #[test]
 fn codes_are_stable() {
-    let expected: [(AuthorityError, u16); 23] = [
+    let expected: [(AuthorityError, u16); 24] = [
         (AuthorityError::NotInitialized, 101),
         (AuthorityError::Renounced, 102),
         (AuthorityError::NotHolder, 103),
@@ -77,6 +77,7 @@ fn codes_are_stable() {
         (AuthorityError::ClearanceFromOutside, 136),
         (AuthorityError::ByNominationOnly, 137),
         (AuthorityError::ClearanceNotAtConfig, 138),
+        (AuthorityError::RoleSendsInProgram, 139),
     ];
     for (error, code) in &expected {
         assert_eq!(error.code(), *code, "{error:?}");

@@ -20,7 +20,7 @@ impl<C: HasSlot<Deputy>> Policy<C> for Deputy {
 fn mark_op(config: &mut WithMark, account: AccountId, op: Op) {
     let ctx = Ctx {
         caller: Some(caller(account, None)),
-        program: PROGRAM,
+        config: config_actor(),
         gate: InitGate::Deployer,
     };
     run_op::<Marking, WithMark>(&ctx, config, op).unwrap();
@@ -159,7 +159,7 @@ fn a_role_appointed_only_by_nomination_refuses_every_init() {
         ] {
             let ctx = Ctx {
                 caller: Some(who),
-                program: PROGRAM,
+                config: config_actor(),
                 gate: InitGate::Deployer,
             };
             let before = || FirstAndDeputy {

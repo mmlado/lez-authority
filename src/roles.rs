@@ -2,11 +2,13 @@
 //! runs through it.
 
 use lee_core::account::AccountId;
+use lee_core::program::SyncMessage;
 
 use crate::*;
 
-/// One management operation on `R`'s slot, under `R`'s policy.
-pub(crate) fn run_op<R, C>(ctx: &Ctx, config: &mut C, op: Op) -> Result<(), Refusal>
+/// One management operation on `R`'s slot, under `R`'s policy, and the sync messages the config
+/// sends with it.
+pub(crate) fn run_op<R, C>(ctx: &Ctx, config: &mut C, op: Op) -> Result<Vec<SyncMessage>, Refusal>
 where
     R: Policy<C>,
     C: HasSlot<R>,
@@ -80,13 +82,26 @@ where
         }
         Op::Own(op) => {
             let holder = HasSlot::<R>::slot(config).authority_slot().clone();
-            let mut slot = R::operate(ctx, config, &op)?;
+            let (mut slot, sends) = R::operate(ctx, config, &op)?;
+            let sends = sendable::<R>(ctx, sends)?;
             // The holder moves only through the four operations above, whatever the role returns.
             *slot.authority_slot_mut() = holder;
             *HasSlot::<R>::slot_mut(config) = slot;
+            return Ok(sends);
         }
     }
-    Ok(())
+    Ok(Vec::new())
+}
+
+/// Role `R`'s sync messages, unless one goes to an actor of the program.
+fn sendable<R: Role>(ctx: &Ctx, sends: Vec<SyncMessage>) -> Result<Vec<SyncMessage>, Refusal> {
+    // Every actor of the program takes a message from the config as already gated.
+    let in_program =
+        |sent: &SyncMessage| sent.to.program_account_id == ctx.config.program_account_id;
+    if sends.iter().any(in_program) {
+        return Err(Refusal::of::<R>(AuthorityError::RoleSendsInProgram));
+    }
+    Ok(sends)
 }
 
 /// The holder a message declares it needs, checked before the handler.
@@ -104,16 +119,16 @@ where
 
 /// Role `R`'s consent to a program message at the config, unless the role declares no refusal or
 /// the message is exempt from it.
-fn may_run<R, C, M>(ctx: &Ctx, config: &C, message: &M) -> Result<(), Refusal>
+fn may_run<R, C, M>(ctx: &Ctx, config: &C, message: &M) -> Result<Vec<SyncMessage>, Refusal>
 where
     R: Policy<C>,
     C: HasSlot<R>,
     M: Gated,
 {
     if !R::REFUSES_MESSAGES || message.exempt::<R>() {
-        return Ok(());
+        return Ok(Vec::new());
     }
-    R::may_run(ctx, config)
+    sendable::<R>(ctx, R::may_run(ctx, config)?)
 }
 
 /// The handler must leave every slot as it found it.
@@ -156,15 +171,15 @@ where
 }
 
 /// Role `R`'s answer to a request for clearance, if it refuses program messages.
-fn clears<R, C>(ctx: &Ctx, config: &C) -> Result<(), Refusal>
+fn clears<R, C>(ctx: &Ctx, config: &C) -> Result<Vec<SyncMessage>, Refusal>
 where
     R: Policy<C>,
     C: HasSlot<R>,
 {
-    if R::REFUSES_MESSAGES {
-        R::may_run(ctx, config)?;
+    if !R::REFUSES_MESSAGES {
+        return Ok(Vec::new());
     }
-    Ok(())
+    sendable::<R>(ctx, R::may_run(ctx, config)?)
 }
 
 /// Whether every name in `marked` is one of `names`.
@@ -237,9 +252,10 @@ pub trait Roles<C, M>: sealed::Sealed {
     /// The name and the prose name of the role at `role`.
     #[doc(hidden)]
     fn names(role: usize) -> (&'static str, &'static str);
-    /// Runs an operation of the role at `role`.
+    /// Runs an operation of the role at `role`, and returns the sync messages the config sends
+    /// with it.
     #[doc(hidden)]
-    fn run_op(ctx: &Ctx, config: &mut C, role: usize, op: Op) -> Result<(), Refusal>;
+    fn run_op(ctx: &Ctx, config: &mut C, role: usize, op: Op) -> Result<Vec<SyncMessage>, Refusal>;
     /// Whether the message needs any role's holder.
     #[doc(hidden)]
     fn needs_any(message: &M) -> bool;
@@ -247,9 +263,9 @@ pub trait Roles<C, M>: sealed::Sealed {
     #[doc(hidden)]
     fn gate(ctx: &Ctx, config: &C, message: &M) -> Result<(), Refusal>;
     /// Asks the role that refuses program messages, unless the message is exempt from it, whether
-    /// it may run.
+    /// it may run, and returns the sync messages its consent comes with.
     #[doc(hidden)]
-    fn may_run(ctx: &Ctx, config: &C, message: &M) -> Result<(), Refusal>;
+    fn may_run(ctx: &Ctx, config: &C, message: &M) -> Result<Vec<SyncMessage>, Refusal>;
     /// Refuses a slot in `after` that differs from the same slot in `before`.
     #[doc(hidden)]
     fn unchanged(after: &C, before: &C) -> Result<(), Refusal>;
@@ -257,9 +273,10 @@ pub trait Roles<C, M>: sealed::Sealed {
     /// program messages and the message is not exempt from it.
     #[doc(hidden)]
     fn needs_clearance(message: &M) -> bool;
-    /// The answer of the role that refuses program messages to a request for clearance.
+    /// The answer of the role that refuses program messages to a request for clearance, and the
+    /// sync messages it comes with.
     #[doc(hidden)]
-    fn clear(ctx: &Ctx, config: &C) -> Result<(), Refusal>;
+    fn clear(ctx: &Ctx, config: &C) -> Result<Vec<SyncMessage>, Refusal>;
 }
 
 impl<C, M, A> Roles<C, M> for (A,)
@@ -285,7 +302,12 @@ where
         (A::NAME, A::PROSE_NAME)
     }
 
-    fn run_op(ctx: &Ctx, config: &mut C, _role: usize, op: Op) -> Result<(), Refusal> {
+    fn run_op(
+        ctx: &Ctx,
+        config: &mut C,
+        _role: usize,
+        op: Op,
+    ) -> Result<Vec<SyncMessage>, Refusal> {
         run_op::<A, C>(ctx, config, op)
     }
 
@@ -297,7 +319,7 @@ where
         gate::<A, C, M>(ctx, config, message)
     }
 
-    fn may_run(ctx: &Ctx, config: &C, message: &M) -> Result<(), Refusal> {
+    fn may_run(ctx: &Ctx, config: &C, message: &M) -> Result<Vec<SyncMessage>, Refusal> {
         may_run::<A, C, M>(ctx, config, message)
     }
 
@@ -309,7 +331,7 @@ where
         asks::<A, C, M>(message)
     }
 
-    fn clear(ctx: &Ctx, config: &C) -> Result<(), Refusal> {
+    fn clear(ctx: &Ctx, config: &C) -> Result<Vec<SyncMessage>, Refusal> {
         clears::<A, C>(ctx, config)
     }
 }
@@ -349,7 +371,7 @@ where
         }
     }
 
-    fn run_op(ctx: &Ctx, config: &mut C, role: usize, op: Op) -> Result<(), Refusal> {
+    fn run_op(ctx: &Ctx, config: &mut C, role: usize, op: Op) -> Result<Vec<SyncMessage>, Refusal> {
         if role == 0 {
             run_op::<A, C>(ctx, config, op)
         } else {
@@ -366,9 +388,10 @@ where
         gate::<B, C, M>(ctx, config, message)
     }
 
-    fn may_run(ctx: &Ctx, config: &C, message: &M) -> Result<(), Refusal> {
-        may_run::<A, C, M>(ctx, config, message)?;
-        may_run::<B, C, M>(ctx, config, message)
+    fn may_run(ctx: &Ctx, config: &C, message: &M) -> Result<Vec<SyncMessage>, Refusal> {
+        let mut sends = may_run::<A, C, M>(ctx, config, message)?;
+        sends.extend(may_run::<B, C, M>(ctx, config, message)?);
+        Ok(sends)
     }
 
     fn unchanged(after: &C, before: &C) -> Result<(), Refusal> {
@@ -379,8 +402,9 @@ where
         asks::<A, C, M>(message) || asks::<B, C, M>(message)
     }
 
-    fn clear(ctx: &Ctx, config: &C) -> Result<(), Refusal> {
-        clears::<A, C>(ctx, config)?;
-        clears::<B, C>(ctx, config)
+    fn clear(ctx: &Ctx, config: &C) -> Result<Vec<SyncMessage>, Refusal> {
+        let mut sends = clears::<A, C>(ctx, config)?;
+        sends.extend(clears::<B, C>(ctx, config)?);
+        Ok(sends)
     }
 }

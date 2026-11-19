@@ -37,9 +37,11 @@ client   root (C, P)    actors [(C, P)]    signers {}    message an unmarked var
 hop 1    (C, P) config  caller = None
                         state present and decodes                  else E101 / E109
                         may_run of the role that refuses messages, unless exempt   else its code
+                        none of its consent's sync messages goes to an actor of P   else E139
                         handler(input, message)
-                        the handler's write decodes, every slot unchanged   else E109 / E126
                         no message the handler sends is a library message to (C, P)   else E135
+                        the handler's write decodes, every slot unchanged   else E109 / E126
+                        sent: the consent's sync messages, then the handler's
 ```
 
 An unmarked message sent to any other actor runs there over that actor's own state, as in a program without the guard, and nobody need sign. So wherever the handler runs, the guard refuses a response that sends `(C, P)` a library message (E135): the config would take it for a hop from that actor, a holder's seat included.
@@ -62,9 +64,11 @@ hop 2    (C, P) config  from an actor of P                         else E119
                             holder.account != A                    E103
                             holder.via != caller.via               E120
                         may_run of the role that refuses messages, unless exempt   else its code
+                        none of its consent's sync messages goes to an actor of P   else E139
                         handler(input, message)
-                        the handler's write decodes, every slot unchanged   else E109 / E126
                         no message the handler sends is a library message to (C, P)   else E135
+                        the handler's write decodes, every slot unchanged   else E109 / E126
+                        sent: the consent's sync messages, then the handler's
 ```
 
 Sent straight to the config, the message is E122. The handler sees `input.from` as `(A, P)` and `input.message` as the hop.
@@ -98,10 +102,15 @@ hop 2    (C, P) config  from an actor of P                         else E136
                         state present and decodes                  else E101 / E109
                         caller = { A, via unknown } when A signed the transaction, else none
                         may_run of the role that refuses messages   else its code
-                        nothing written
+                        none of its consent's sync messages goes to an actor of P   else E139
+                        nothing written, the consent's sync messages sent
 ```
 
 The same holds at a target for a message the config sends on, `#[from_config]` or not: the target asks for clearance too, so a client lists `(C, P)` beside every target. The handler runs before the refusal, and a refusal reverts the whole transaction, its effects with it. Authorized means the actor's account signed the transaction, whoever sent the message there, so a credit at the actor of a recipient that signed carries the recipient as its caller. A role's holder check refuses at a clearance (E122), since the via is unknown there. A request for clearance sent anywhere but the config is E138, and one inside a hop does not decode (E108). With no role that refuses program messages, nothing asks.
+
+## What a role sends
+
+The consent of the role that refuses program messages, and a role's own operations, may come with sync messages, which the config sends: the consent's ahead of the handler's, or alone at a request for clearance, and an operation's with the config it writes. Each runs in the same transaction, so a refusal there reverts the whole transaction. The guard refuses a role whose messages include one to any actor of `P` (E139). Every actor of `P` takes a message from `(C, P)` as already gated, a `#[from_config]` message and one that needs a holder alike, and a role's rules pass no other role's gate. So a role reaches only other programs. Like the handler's, its messages carry the grants the config's delivery came with, and a seed it names authorizes a receiver whose account is the PDA of `P` that seed derives. Every actor reached must be in the transaction's actor list, so a client lists those too.
 
 ## Nominate and cancel
 

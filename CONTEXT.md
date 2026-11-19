@@ -44,19 +44,23 @@ The first of a program's roles. Its install creates the config, and the guard's 
 _Avoid_: main role, primary role
 
 **Policy**:
-A role's rules: who may install its first holder, who may nominate, who may renounce, what renounce leaves, what the operations it defines for itself do, and whether a program message may run. A role that answers to nobody keeps the defaults. A role that answers to another, as a freeze authority answers to the admin, reads that role's slot.
+A role's rules: who may install its first holder, who may nominate, who may renounce, what renounce leaves, what the operations it defines for itself do, and whether a program message may run. A consent and an operation may come with sync messages, which the config sends. A role that answers to nobody keeps the defaults. A role that answers to another, as a freeze authority answers to the admin, reads that role's slot.
 _Avoid_: permissions, access rules
 
 **Guard**:
 What runs in front of a program's handler: it forwards at seats, unwraps hops at the config, runs management operations, checks the holders a message declares, asks the role that refuses program messages whether one may run, and refuses a handler that changed a slot. The guard attribute puts it there.
 _Avoid_: dispatcher, framework, runtime
 
+**Hook**:
+A point in the guard where a role's policy adds to what the guard does, with the guard's own rules kept around it. A consent that comes with sync messages is one, and an operation that does is another.
+_Avoid_: plugin, middleware, interceptor
+
 **Plain handler**:
 A LEZ program's own handler, taking the receive input and the program's message and returning the response, as it would without the library.
 _Avoid_: callback, hook
 
 **Context**:
-What a role's policy sees: the caller, if any, and the program's init gate. The handler never sees it.
+What a role's policy sees: the caller, if any, the config's actor, and the program's init gate. The handler never sees it.
 _Avoid_: ctx in prose, session
 
 **Library message**:

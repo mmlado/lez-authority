@@ -50,6 +50,11 @@ pub const fn seed(label: &[u8]) -> PdaSeed {
 /// Wherever the handler runs, the guard refuses a response that sends the config a library
 /// message, which the config would take for a hop from that actor.
 ///
+/// The refusing role's consent, and a role's own operation, may come with sync messages, which
+/// the config sends in the same transaction: the consent's ahead of the handler's own. A message
+/// to an actor of the program among them is refused (E139), since every actor of the program
+/// takes a message from the config as already gated.
+///
 /// The handler of a message that came through a seat sees `input.from` as the sender's own
 /// actor and `input.message` as the hop. A PDA holder's grant comes with the call, so every
 /// program the handler calls receives it too.
@@ -155,7 +160,7 @@ where
                 }
                 return seat(input, config_actor).map_err(refuse);
             }
-            at_the_config::<Rs, C, M>(input, program, gate, None, message, handler)
+            at_the_config::<Rs, C, M>(input, config_actor, gate, None, message, handler)
         }
         Wire::Library(LibraryMessage::Op { role, .. }) => {
             let (role, prose) = Rs::index(&role).map_or((Rs::ROOT, Rs::ROOT_PROSE), Rs::names);
@@ -173,7 +178,7 @@ where
                 .from
                 .filter(|_| input.from_own_program())
                 .ok_or_else(|| refuse(AuthorityError::ClearanceFromOutside))?;
-            answer_clearance::<Rs, C, M>(input, program, gate, from, request)
+            answer_clearance::<Rs, C, M>(input, config_actor, gate, from, request)
         }
         Wire::Library(LibraryMessage::Forwarded(hop)) => {
             if !at_config {
@@ -196,7 +201,7 @@ where
                 Wire::Library(LibraryMessage::Op { role, op }) => {
                     let role = Rs::index(&role)
                         .ok_or_else(|| refuse(AuthorityError::MessageDoesNotDecode))?;
-                    manage::<Rs, C, M>(input, program, gate, caller, role, op)
+                    manage::<Rs, C, M>(input, config_actor, gate, caller, role, op)
                 }
                 Wire::Library(LibraryMessage::Forwarded(_) | LibraryMessage::Clearance(_)) => {
                     Err(refuse(AuthorityError::MessageDoesNotDecode))
@@ -205,7 +210,14 @@ where
                     if message.only_from_config() {
                         return Err(refuse(AuthorityError::NotFromConfig));
                     }
-                    at_the_config::<Rs, C, M>(input, program, gate, Some(caller), message, handler)
+                    at_the_config::<Rs, C, M>(
+                        input,
+                        config_actor,
+                        gate,
+                        Some(caller),
+                        message,
+                        handler,
+                    )
                 }
             }
         }
@@ -215,7 +227,7 @@ where
 /// A management operation at the config, which the root role's `Init` may create.
 fn manage<Rs, C, M>(
     input: &ReceiveInput,
-    program: AccountId,
+    config_actor: Actor,
     gate: InitGate,
     caller: Caller,
     role: usize,
@@ -241,19 +253,21 @@ where
     };
     let ctx = Ctx {
         caller: Some(caller),
-        program,
+        config: config_actor,
         gate,
     };
-    Rs::run_op(&ctx, &mut config, role, op)?;
+    let sends = Rs::run_op(&ctx, &mut config, role, op)?;
     let bytes = borsh::to_vec(&config).map_err(|_| refuse(AuthorityError::ConfigDoesNotDecode))?;
-    Ok(Response::set_state(bytes))
+    let mut response = Response::set_state(bytes);
+    response.sync_messages = sends;
+    Ok(response)
 }
 
 /// A program message at the config: the declared holders, the refusing role's consent, the
-/// handler, then the slots.
+/// handler, then the slots. The consent's sync messages go ahead of the handler's.
 fn at_the_config<Rs, C, M>(
     input: &ReceiveInput,
-    program: AccountId,
+    config_actor: Actor,
     gate: InitGate,
     caller: Option<Caller>,
     message: M,
@@ -277,18 +291,20 @@ where
         borsh::from_slice(pre).map_err(|_| refuse(AuthorityError::ConfigDoesNotDecode))?;
     let ctx = Ctx {
         caller,
-        program,
+        config: config_actor,
         gate,
     };
     Rs::gate(&ctx, &config, &message)?;
-    Rs::may_run(&ctx, &config, &message)?;
-    let response = handler(input, message)?;
+    let mut sends = Rs::may_run(&ctx, &config, &message)?;
+    let mut response = handler(input, message)?;
     if let Some(post) = &response.post_state {
         let post: &[u8] = post;
         let after: C =
             borsh::from_slice(post).map_err(|_| refuse(AuthorityError::ConfigDoesNotDecode))?;
         Rs::unchanged(&after, &config)?;
     }
+    sends.append(&mut response.sync_messages);
+    response.sync_messages = sends;
     Ok(response)
 }
 
@@ -296,7 +312,7 @@ where
 /// caller is the sending actor's account when it authorized the transaction.
 fn answer_clearance<Rs, C, M>(
     input: &ReceiveInput,
-    program: AccountId,
+    config_actor: Actor,
     gate: InitGate,
     from: Actor,
     request: Clearance,
@@ -322,11 +338,12 @@ where
             via: None,
             via_known: false,
         }),
-        program,
+        config: config_actor,
         gate,
     };
-    Rs::clear(&ctx, &config)?;
-    Ok(Response::keep_state())
+    let mut response = Response::keep_state();
+    response.sync_messages = Rs::clear(&ctx, &config)?;
+    Ok(response)
 }
 
 /// Hop 1, at the sender's own actor: vouch and forward the message as it arrived.

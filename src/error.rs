@@ -56,6 +56,8 @@ pub enum AuthorityError {
     ByNominationOnly,
     /// A request for clearance arrived somewhere other than the config account.
     ClearanceNotAtConfig,
+    /// A role's rules returned a message to an actor of the program.
+    RoleSendsInProgram,
     /// A refusal of a role's own, printed with its crate's prefix.
     Role {
         /// The role crate's name, the prefix of the text.
@@ -69,7 +71,7 @@ pub enum AuthorityError {
 
 impl AuthorityError {
     /// Every refusal of the engine's own, for the table test.
-    pub const ALL: [Self; 23] = [
+    pub const ALL: [Self; 24] = [
         Self::NotInitialized,
         Self::ConfigDoesNotDecode,
         Self::MessageDoesNotDecode,
@@ -93,6 +95,7 @@ impl AuthorityError {
         Self::ClearanceFromOutside,
         Self::ByNominationOnly,
         Self::ClearanceNotAtConfig,
+        Self::RoleSendsInProgram,
     ];
 
     /// The stable code. Append-only: a number is never reused or renumbered.
@@ -122,6 +125,7 @@ impl AuthorityError {
             Self::ClearanceFromOutside => 136,
             Self::ByNominationOnly => 137,
             Self::ClearanceNotAtConfig => 138,
+            Self::RoleSendsInProgram => 139,
             Self::Role { code, .. } => *code,
         }
     }
@@ -190,6 +194,9 @@ impl AuthorityError {
             }
             Self::ByNominationOnly => {
                 format!("the {prose} is appointed by nomination, never installed")
+            }
+            Self::RoleSendsInProgram => {
+                format!("the {prose} must not send a message to an actor of its own program")
             }
             Self::Role { sentence, .. } => (*sentence).into(),
         }

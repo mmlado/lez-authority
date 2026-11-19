@@ -7,8 +7,8 @@
 //! The seat checks `is_authorized` and forwards the message to the config, naming the program
 //! that reached it. The config trusts the forward because only this program's own actors
 //! reach it with `from_own_program()`, and every one of them runs the same code: [`guard()`].
-//! The guard refuses a handler whose response sends the config a library message, so only a
-//! seat builds the hop.
+//! The guard refuses a handler whose response sends the config a library message, and a role
+//! whose rules send any actor of the program a message, so only a seat builds the hop.
 //!
 //! The program stays a plain LEZ program: its own message enum, its own state, and a handler
 //! `fn(&ReceiveInput, Message) -> Response` under `lee_core::actor_entrypoint!`. The
