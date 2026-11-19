@@ -149,7 +149,11 @@ impl From<FreezeError> for AuthorityError {
 /// change nothing is refused.
 /// While the program is frozen, every program message is refused (E217), but for one marked
 /// `#[exempt(Freeze)]`: at the config, and at the program's other actors through their request
-/// for clearance, so a refused message there changes nothing.
+/// for clearance, so a refused message there changes nothing. A program message whose caller is
+/// a frozen account is refused the same way (E218), after the check for a frozen program, so a
+/// frozen program answers E217 first. A message without a caller, such as one sent straight to
+/// the config or a credit at the actor of a recipient that did not sign the transaction, is
+/// refused only while the program is frozen (E217).
 impl<C> Policy<C> for Freeze
 where
     C: HasSlot<Freeze> + HasSlot<Admin>,
@@ -202,9 +206,19 @@ where
         Ok(slot)
     }
 
-    fn may_run(_ctx: &Ctx, config: &C) -> Result<(), Refusal> {
-        if HasSlot::<Freeze>::slot(config).frozen {
+    fn may_run(ctx: &Ctx, config: &C) -> Result<(), Refusal> {
+        let slot = HasSlot::<Freeze>::slot(config);
+        if slot.frozen {
             return Err(Refusal::of::<Freeze>(FreezeError::Frozen.into()));
+        }
+        // An account is frozen whichever program reached it, so the via is not compared.
+        let frozen_caller = ctx.caller().is_some_and(|caller| {
+            slot.frozen_accounts
+                .binary_search(&caller.account())
+                .is_ok()
+        });
+        if frozen_caller {
+            return Err(Refusal::of::<Freeze>(FreezeError::AccountFrozen.into()));
         }
         Ok(())
     }
@@ -254,8 +268,11 @@ pub enum FreezeOp {
     Freeze,
     /// Releases the program. Refused with E212 when it is not frozen.
     Release,
-    /// Freezes one account, whether the program is frozen or not. Refused with E213 when it is
-    /// frozen already, and with E225 for the all-zero id.
+    /// Freezes one account, and runs whether the program is frozen or not. Every program message
+    /// with that account as its caller is then refused (E218), at the config and at the program's
+    /// other actors, but for the exempt ones. While the program is frozen, such a message is
+    /// refused with E217 instead. Its management operations still run. Refused with E213 when it
+    /// is frozen already, and with E225 for the all-zero id.
     FreezeAccount {
         /// The account to freeze.
         account: AccountId,

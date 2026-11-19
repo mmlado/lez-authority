@@ -164,6 +164,10 @@ fn release_account(account: AccountId) -> Wire<Message> {
 
 /// `config` with `accounts` as the frozen accounts.
 fn with_frozen(mut config: Config, accounts: &[AccountId]) -> Config {
+    assert!(
+        accounts.windows(2).all(|pair| pair[0] < pair[1]),
+        "the slot keeps its frozen accounts sorted, each once"
+    );
     config.freeze.frozen_accounts = accounts.to_vec();
     config
 }
@@ -200,6 +204,10 @@ fn e217() -> Refusal {
 
 fn e208() -> Refusal {
     Refusal::of::<Freeze>(FreezeError::NotAdminOrFreezeAuthority.into())
+}
+
+fn e218() -> Refusal {
+    Refusal::of::<Freeze>(FreezeError::AccountFrozen.into())
 }
 
 #[test]
@@ -1124,6 +1132,181 @@ fn the_freeze_authority_s_own_program_message_is_frozen_too() {
     );
 }
 
+#[test]
+fn a_frozen_account_s_message_is_refused_at_the_config() {
+    let both_frozen = with_frozen(config(holder(AUTHORITY)), &[AUTHORITY, ADMIN]);
+    assert_eq!(
+        send(ADMIN, &both_frozen, Message::AdminSet(1).into()),
+        Err(e218())
+    );
+    assert_eq!(
+        send(AUTHORITY, &both_frozen, Message::AuthoritySet(1).into()),
+        Err(e218())
+    );
+    let other_frozen = with_frozen(config(holder(AUTHORITY)), &[STRANGER]);
+    assert_eq!(
+        send(ADMIN, &other_frozen, Message::AdminSet(1).into()),
+        Ok(valued(other_frozen.clone(), 1))
+    );
+    assert_eq!(
+        send(AUTHORITY, &other_frozen, Message::AuthoritySet(2).into()),
+        Ok(valued(other_frozen.clone(), 2))
+    );
+}
+
+#[test]
+fn the_holder_s_check_and_the_program_s_freeze_come_before_a_frozen_account() {
+    let stranger_frozen = with_frozen(config(holder(AUTHORITY)), &[STRANGER]);
+    assert_eq!(
+        send(STRANGER, &stranger_frozen, Message::AdminSet(1).into()),
+        Err(Refusal::of::<Admin>(AuthorityError::NotHolder))
+    );
+    let all_frozen = frozen(with_frozen(config(holder(AUTHORITY)), &[ADMIN]));
+    assert_eq!(
+        send(ADMIN, &all_frozen, Message::AdminSet(1).into()),
+        Err(e217())
+    );
+}
+
+#[test]
+fn a_message_sent_straight_to_the_config_has_no_caller_to_freeze() {
+    let mut accounts = [
+        AUTHORITY,
+        STRANGER,
+        ELSEWHERE,
+        config_actor().account_id,
+        ADMIN,
+    ];
+    accounts.sort();
+    let pre = with_frozen(config(holder(AUTHORITY)), &accounts);
+    assert_eq!(straight(&pre, Message::Set(3)), Ok(valued(pre.clone(), 3)));
+}
+
+#[test]
+fn a_frozen_account_s_exempt_message_runs() {
+    let admin_frozen = with_frozen(config(holder(AUTHORITY)), &[ADMIN]);
+    assert_eq!(
+        send(ADMIN, &admin_frozen, Message::AdminExemptSet(6).into()),
+        Ok(valued(admin_frozen.clone(), 6))
+    );
+    let stranger_frozen = with_frozen(config(holder(AUTHORITY)), &[STRANGER]);
+    let counted = elsewhere(
+        STRANGER,
+        None,
+        true,
+        &stranger_frozen,
+        Message::ExemptCount(1),
+    )
+    .unwrap();
+    assert_eq!(counted.post_state.as_deref(), Some(&[1u8][..]));
+    assert!(requests(&counted).is_empty());
+}
+
+#[test]
+fn a_frozen_account_keeps_its_management_operations() {
+    let both_frozen = || with_frozen(config(holder(AUTHORITY)), &[AUTHORITY, ADMIN]);
+    assert_eq!(
+        send(
+            ADMIN,
+            &both_frozen(),
+            admin_op(Op::Nominate { next: SUCCESSOR })
+        ),
+        Ok(Config {
+            admin: AuthoritySlot::Held {
+                holder: Holder {
+                    account: ADMIN,
+                    via: None,
+                },
+                nominee: Some(SUCCESSOR),
+            },
+            ..both_frozen()
+        })
+    );
+    assert_eq!(
+        send(ADMIN, &both_frozen(), renounce()),
+        Ok(with_frozen(
+            config(AuthoritySlot::Unset),
+            &[AUTHORITY, ADMIN]
+        ))
+    );
+    assert_eq!(
+        send(AUTHORITY, &both_frozen(), freeze()),
+        Ok(frozen(both_frozen()))
+    );
+    assert_eq!(
+        send(AUTHORITY, &both_frozen(), freeze_account(STRANGER)),
+        Ok(with_frozen(
+            config(holder(AUTHORITY)),
+            &[AUTHORITY, STRANGER, ADMIN]
+        ))
+    );
+    let released = send(AUTHORITY, &both_frozen(), release_account(AUTHORITY)).unwrap();
+    assert_eq!(released, with_frozen(config(holder(AUTHORITY)), &[ADMIN]));
+    assert_eq!(
+        send(AUTHORITY, &released, Message::AuthoritySet(1).into()),
+        Ok(valued(released.clone(), 1))
+    );
+    let offered = with_frozen(
+        config(AuthoritySlot::Held {
+            holder: Holder {
+                account: AUTHORITY,
+                via: None,
+            },
+            nominee: Some(SUCCESSOR),
+        }),
+        &[AUTHORITY, ADMIN],
+    );
+    for sender in [AUTHORITY, ADMIN] {
+        assert_eq!(
+            send(sender, &both_frozen(), nominate(SUCCESSOR)),
+            Ok(offered.clone())
+        );
+    }
+    let all_three = |freeze| with_frozen(config(freeze), &[AUTHORITY, SUCCESSOR, ADMIN]);
+    let offered = send(
+        AUTHORITY,
+        &all_three(holder(AUTHORITY)),
+        nominate(SUCCESSOR),
+    )
+    .unwrap();
+    assert_eq!(
+        send(SUCCESSOR, &offered, accept()),
+        Ok(all_three(holder(SUCCESSOR)))
+    );
+    assert_eq!(
+        send(AUTHORITY, &frozen(both_frozen()), release()),
+        Ok(both_frozen())
+    );
+}
+
+#[test]
+fn a_frozen_pda_is_refused_through_its_program_and_keeps_its_management_operations() {
+    let vault = AccountId::for_public_pda(&MULTISIG, &PdaSeed::new([7; 32]));
+    let vault_frozen = Config {
+        admin: AuthoritySlot::held(Holder {
+            account: vault,
+            via: Some(MULTISIG),
+        }),
+        ..with_frozen(config(holder(AUTHORITY)), &[vault])
+    };
+    assert_eq!(
+        send_via(
+            vault,
+            Some(MULTISIG),
+            Some(&vault_frozen),
+            Message::AdminSet(1).into()
+        ),
+        Err(e218())
+    );
+    assert_eq!(
+        send_via(vault, Some(MULTISIG), Some(&vault_frozen), renounce()),
+        Ok(Config {
+            freeze: with_frozen(config(AuthoritySlot::Unset), &[vault]).freeze,
+            ..vault_frozen
+        })
+    );
+}
+
 fn actor(account: AccountId) -> Actor {
     Actor::new(account, PROGRAM)
 }
@@ -1281,4 +1464,88 @@ fn a_seat_forwards_a_role_operation_and_a_gated_message_with_no_request_for_clea
             Wire::Library(LibraryMessage::Forwarded(_))
         ));
     }
+}
+
+#[test]
+fn a_frozen_account_is_refused_at_its_actor_when_it_authorized_the_transaction() {
+    let stranger_frozen = with_frozen(config(holder(AUTHORITY)), &[STRANGER]);
+    for from in senders() {
+        assert_eq!(
+            elsewhere(STRANGER, from, true, &stranger_frozen, Message::Count(1)).err(),
+            Some(e218())
+        );
+        let counted =
+            elsewhere(STRANGER, from, false, &stranger_frozen, Message::Count(1)).unwrap();
+        assert_eq!(counted.post_state.as_deref(), Some(&[1u8][..]));
+        assert_eq!(requests(&counted), [Clearance { authorized: false }]);
+    }
+}
+
+#[test]
+fn a_credit_lands_at_a_frozen_account_that_did_not_sign_the_transaction() {
+    let successor_frozen = with_frozen(config(holder(AUTHORITY)), &[SUCCESSOR]);
+    let credit = |authorized| {
+        elsewhere(
+            SUCCESSOR,
+            Some(config_actor()),
+            authorized,
+            &successor_frozen,
+            Message::Credit(2),
+        )
+    };
+    assert_eq!(
+        credit(false).unwrap().post_state.as_deref(),
+        Some(&[2u8][..])
+    );
+    assert_eq!(credit(true).err(), Some(e218()));
+}
+
+#[test]
+fn a_frozen_account_is_matched_by_its_whole_id() {
+    let pre = with_frozen(config(holder(AUTHORITY)), &[id(3, 1), id(3, 3)]);
+    let counted = elsewhere(id(3, 2), None, true, &pre, Message::Count(1)).unwrap();
+    assert_eq!(requests(&counted), [Clearance { authorized: true }]);
+    assert_eq!(
+        elsewhere(id(3, 3), None, true, &pre, Message::Count(1)).err(),
+        Some(e218())
+    );
+    for (admin, refusal) in [(id(3, 2), None), (id(3, 3), Some(e218()))] {
+        let pre = Config {
+            admin: holder(admin),
+            ..pre.clone()
+        };
+        assert_eq!(
+            send(admin, &pre, Message::AdminSet(1).into()).err(),
+            refusal
+        );
+    }
+}
+
+#[test]
+fn a_frozen_sender_does_not_freeze_the_actor_it_sends_to() {
+    let successor_frozen = with_frozen(config(holder(AUTHORITY)), &[SUCCESSOR]);
+    let counted = elsewhere(
+        STRANGER,
+        Some(actor(SUCCESSOR)),
+        true,
+        &successor_frozen,
+        Message::Count(1),
+    )
+    .unwrap();
+    assert_eq!(counted.post_state.as_deref(), Some(&[1u8][..]));
+    assert_eq!(requests(&counted), [Clearance { authorized: true }]);
+}
+
+#[test]
+fn after_an_account_s_release_its_messages_run_again() {
+    let stranger_frozen = with_frozen(config(holder(AUTHORITY)), &[STRANGER]);
+    let released = send(AUTHORITY, &stranger_frozen, release_account(STRANGER)).unwrap();
+    let counted = elsewhere(STRANGER, None, true, &released, Message::Count(1)).unwrap();
+    assert_eq!(counted.post_state.as_deref(), Some(&[1u8][..]));
+    let admin_frozen = with_frozen(config(holder(AUTHORITY)), &[ADMIN]);
+    let released = send(AUTHORITY, &admin_frozen, release_account(ADMIN)).unwrap();
+    assert_eq!(
+        send(ADMIN, &released, Message::AdminSet(4).into()),
+        Ok(valued(config(holder(AUTHORITY)), 4))
+    );
 }

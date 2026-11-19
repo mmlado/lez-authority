@@ -29,7 +29,7 @@ The end of a freeze, or of one account's freeze, by a freeze operation.
 _Avoid_: unfreeze, thaw, resume
 
 **Freezable message**:
-Any program message that is not exempt. A freeze refuses it, and so does a frozen account sending it.
+Any program message that is not exempt. A freeze refuses it, and so does a frozen account that is its caller.
 _Avoid_: gated message (the engine's word for a message that needs a holder), frozen message
 
 **Exempt message**:
