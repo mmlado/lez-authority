@@ -101,7 +101,7 @@ Held → Held, the rest of the config changed by the handler
 
 **Sent by:** the admin, through its seat.
 
-**Checks:** the guard's, before the handler, for a message marked `#[only(Admin)]`: the message came through a seat (E122), then as for `Nominate`. After the handler returns, the guard refuses a write whose slot changed (E126), and a library message to the config (E135).
+**Checks:** the guard's, before the handler, for a message marked `#[only(Admin)]`: the message came through a seat (E122), then as for `Nominate`. After the handler returns, the guard refuses a write whose slot changed (E126), a library message to the config (E135), and a role's own message to an actor of the program (E140).
 
 ## State detection
 

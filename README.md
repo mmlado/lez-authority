@@ -228,6 +228,7 @@ A refusal is a panic with a stable code: `lez-authority/admin E103: the signing 
 | 126 | a handler must not change the admin slot |
 | 131 | there is no admin |
 | 135 | a handler must not send a library message to the config account |
+| 140 | a handler must not send a role's own message to an actor of its program |
 
 ## Overhead
 

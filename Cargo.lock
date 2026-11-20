@@ -3736,17 +3736,18 @@ dependencies = [
 [[package]]
 name = "lez-authority"
 version = "0.2.0"
-source = "git+https://github.com/mmlado/lez-authority?rev=6b30f886bba11ead50444c2c9e1ee1a08e843ade#6b30f886bba11ead50444c2c9e1ee1a08e843ade"
+source = "git+https://github.com/mmlado/lez-authority?rev=73e8628844a491ae5a7854c72c0be73e63a7040f#73e8628844a491ae5a7854c72c0be73e63a7040f"
 dependencies = [
  "borsh",
  "lee_core",
  "lez-authority-macros",
+ "risc0-zkvm",
 ]
 
 [[package]]
 name = "lez-authority-macros"
 version = "0.2.0"
-source = "git+https://github.com/mmlado/lez-authority?rev=6b30f886bba11ead50444c2c9e1ee1a08e843ade#6b30f886bba11ead50444c2c9e1ee1a08e843ade"
+source = "git+https://github.com/mmlado/lez-authority?rev=73e8628844a491ae5a7854c72c0be73e63a7040f#73e8628844a491ae5a7854c72c0be73e63a7040f"
 dependencies = [
  "proc-macro2",
  "quote",
