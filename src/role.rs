@@ -3,6 +3,7 @@
 use lee_core::account::{AccountId, Actor};
 use lee_core::program::SyncMessage;
 
+use crate::routing::own_actor_and_seed;
 use crate::*;
 
 /// A role a slot plays, such as admin. Names the slot in panic text.
@@ -28,10 +29,10 @@ pub trait HasSlot<R: Role> {
     fn slot_mut(&mut self) -> &mut R::Slot;
 }
 
-/// Who may install, nominate and renounce role `Self` in a config `C`, what the operations it
-/// defines for itself do, and which program messages may run. Every method holds the rule of a
-/// role that answers to nobody else, defines no operations of its own and lets every message
-/// run, so such a role implements it empty. A role that answers to another, as a freeze
+/// Who may install, nominate and renounce role `Self` in a config `C`, what the operations and
+/// messages it defines for itself do, and which program messages may run. Every method holds the
+/// rule of a role that answers to nobody else, defines no operations or messages of its own and
+/// lets every message run, so such a role implements it empty. A role that answers to another, as a freeze
 /// authority answers to the admin, overrides the rules that differ and reads the other role's
 /// slot through `C`.
 pub trait Policy<C>: Role + Sized
@@ -90,7 +91,8 @@ where
     /// and keeps its holder part as it was: the holder moves only through `Init`, `Nominate`,
     /// `Accept` and `Renounce`. It refuses the operation if one of the messages goes to an actor
     /// of the program (E139), since every actor of the program takes a message from the config as
-    /// already gated. By default the role defines none, and the operation is refused as a
+    /// already gated, but for the role's own message, [`Ctx::own_message`], to an actor other
+    /// than the config. By default the role defines none, and the operation is refused as a
     /// message that does not decode.
     ///
     /// # Errors
@@ -115,8 +117,9 @@ where
     /// own, or alone at a request for clearance. Each runs in the same transaction, so a refusal
     /// there refuses the message too. A message to an actor of the program among them is refused
     /// (E139), since every actor of the program takes a message from the config as already
-    /// gated. Like the handler's, the messages carry the grants the config's delivery came
-    /// with.
+    /// gated, but for the role's own message, [`Ctx::own_message`], to an actor other than the
+    /// config.
+    /// Like the handler's, the messages carry the grants the config's delivery came with.
     ///
     /// At the config, `ctx.caller()` is the sender of a message that came through its seat, and
     /// none for one sent straight to the config. At a request for clearance it is the sending
@@ -129,6 +132,19 @@ where
     /// The refusal that stops the message.
     fn may_run(_ctx: &Ctx, _config: &C) -> Result<Vec<SyncMessage>, Refusal> {
         Ok(Vec::new())
+    }
+
+    /// Handles one of the role's own messages, [`Ctx::own_message`], at the role's own actor for
+    /// the message's key, [`own_actor`], and returns that actor's new state, or `None` to keep
+    /// it. `state` is the actor's state, and `ctx.caller()` is none. The guard takes the message
+    /// only from the config and never at the config (E123), and only at that actor (E141), so a
+    /// role writes no other actor's state. The handler never sees the message. By default the
+    /// role defines none, and the message is refused as one that does not decode.
+    ///
+    /// # Errors
+    /// The refusal that stops the message, and the transaction with it.
+    fn receive(_ctx: &Ctx, _state: &[u8], _message: &[u8]) -> Result<Option<Vec<u8>>, Refusal> {
+        Err(Refusal::of::<Self>(AuthorityError::MessageDoesNotDecode))
     }
 }
 
@@ -155,6 +171,20 @@ impl Ctx {
     #[must_use]
     pub const fn config(&self) -> Actor {
         self.config
+    }
+
+    /// Role `R`'s own message to its own actor for `key`, [`own_actor`], for `R`'s consent or
+    /// operation to return. That actor hands `message` to [`Policy::receive`]. The message names
+    /// the actor's seed, so it reaches the actor before the actor holds any state.
+    #[must_use]
+    pub fn own_message<R: Role>(&self, key: [u8; 32], message: Vec<u8>) -> SyncMessage {
+        let (to, seed) = own_actor_and_seed(R::NAME, self.config, &key);
+        let own = Wire::<()>::Library(LibraryMessage::Own {
+            role: R::NAME.into(),
+            key,
+            message,
+        });
+        SyncMessage::new(to, &own).with_pda_seeds([seed])
     }
 
     /// The sender, when the message came through the sender's own actor.

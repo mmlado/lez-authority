@@ -1135,6 +1135,7 @@ dependencies = [
  "borsh",
  "lee_core",
  "lez-authority-macros",
+ "risc0-zkvm",
 ]
 
 [[package]]

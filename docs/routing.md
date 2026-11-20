@@ -37,9 +37,10 @@ client   root (C, P)    actors [(C, P)]    signers {}    message an unmarked var
 hop 1    (C, P) config  caller = None
                         state present and decodes                  else E101 / E109
                         may_run of the role that refuses messages, unless exempt   else its code
-                        none of its consent's sync messages goes to an actor of P   else E139
+                        its consent sends an actor of P only its own message, never (C, P)   else E139
                         handler(input, message)
                         no message the handler sends is a library message to (C, P)   else E135
+                        no message the handler sends is a role's own message to an actor of P   else E140
                         the handler's write decodes, every slot unchanged   else E109 / E126
                         sent: the consent's sync messages, then the handler's
 ```
@@ -64,9 +65,10 @@ hop 2    (C, P) config  from an actor of P                         else E119
                             holder.account != A                    E103
                             holder.via != caller.via               E120
                         may_run of the role that refuses messages, unless exempt   else its code
-                        none of its consent's sync messages goes to an actor of P   else E139
+                        its consent sends an actor of P only its own message, never (C, P)   else E139
                         handler(input, message)
                         no message the handler sends is a library message to (C, P)   else E135
+                        no message the handler sends is a role's own message to an actor of P   else E140
                         the handler's write decodes, every slot unchanged   else E109 / E126
                         sent: the consent's sync messages, then the handler's
 ```
@@ -84,6 +86,7 @@ hop 2    (C, P) config  as above, and the handler's response sends a #[from_conf
 hop 3    (T, P) target  from == Some((C, P)), by exact actor       else E123
                         handler(input, message) over the target's own state
                         no message the handler sends is a library message to (C, P)   else E135
+                        no message the handler sends is a role's own message to an actor of P   else E140
 ```
 
 "From an actor of P" is not enough at hop 3, because any actor of `P` passes it: a stranger's seat could send the same message to a target. The target compares the whole actor. A `#[from_config]` message from a client, from another actor, or at the config itself, is E123. Every actor reached must be in the transaction's actor list, so a client lists the target too. An unmarked message the config sends runs at the target as well, but so would the same message from anyone, which is what the mark is for.
@@ -95,6 +98,7 @@ client   root (A, P)    actors [(A, P), (C, P)]    signers as the program needs 
 
 hop 1    (A, P) actor   handler(input, message) over the actor's own state
                         no message the handler sends is a library message to (C, P)   else E135
+                        no message the handler sends is a role's own message to an actor of P   else E140
                         a role refuses program messages and the message is not exempt from it:
                             send sync to (C, P): Clearance { authorized: is_authorized }
 
@@ -102,7 +106,7 @@ hop 2    (C, P) config  from an actor of P                         else E136
                         state present and decodes                  else E101 / E109
                         caller = { A, via unknown } when A signed the transaction, else none
                         may_run of the role that refuses messages   else its code
-                        none of its consent's sync messages goes to an actor of P   else E139
+                        its consent sends an actor of P only its own message, never (C, P)   else E139
                         nothing written, the consent's sync messages sent
 ```
 
@@ -110,7 +114,25 @@ The same holds at a target for a message the config sends on, `#[from_config]` o
 
 ## What a role sends
 
-The consent of the role that refuses program messages, and a role's own operations, may come with sync messages, which the config sends: the consent's ahead of the handler's, or alone at a request for clearance, and an operation's with the config it writes. Each runs in the same transaction, so a refusal there reverts the whole transaction. The guard refuses a role whose messages include one to any actor of `P` (E139). Every actor of `P` takes a message from `(C, P)` as already gated, a `#[from_config]` message and one that needs a holder alike, and a role's rules pass no other role's gate. So a role reaches only other programs. Like the handler's, its messages carry the grants the config's delivery came with, and a seed it names authorizes a receiver whose account is the PDA of `P` that seed derives. Every actor reached must be in the transaction's actor list, so a client lists those too.
+The consent of the role that refuses program messages, and a role's own operations, may come with sync messages, which the config sends: the consent's ahead of the handler's, or alone at a request for clearance, and an operation's with the config it writes. Each runs in the same transaction, so a refusal there reverts the whole transaction. The guard refuses a role whose messages include one to an actor of `P` (E139), but for the role's own message to an actor other than `(C, P)`. Every actor of `P` takes any other message from `(C, P)` as already gated, a `#[from_config]` message and one that needs a holder alike, and a role's rules pass no other role's gate. So a role reaches the program only through its own messages, at its own actors. Like the handler's, its messages carry the grants the config's delivery came with, and a seed it names authorizes a receiver whose account is the PDA of `P` that seed derives. Every actor reached must be in the transaction's actor list, so a client lists those too.
+
+## A role's own message
+
+```text
+client   root (A, P)    actors [(A, P), (C, P), (M, P)]    signers as the message needs
+
+hop n    (C, P) config  a role's consent or operation returns ctx.own_message::<R>(key, bytes)
+                            s = sha256(tag, C, key, R's name), M = PDA of P under s, sent with seed s
+                        M is not C, and the message names R itself   else E139
+
+hop n+1  (M, P) actor   from == Some((C, P)), by exact actor, and M is not C   else E123
+                        the message names a role of the program    else E108
+                        M is the PDA of P under sha256(tag, C, key, R's name)   else E141
+                        R's receive(ctx, state of M, bytes)        else its code, or E108 when R defines none
+                        M's state written as receive returns it, or kept for None
+```
+
+So a role writes only its own actors, never a seat, a target or another role's actor. The handler never sees a role's own message. A handler that sends one to any actor of `P`, sync or async, is refused (E140): one sent from the config would pose as the role, and one from any other actor would be E123 at the receiver anyway. One inside a hop does not decode (E108). At `(M, P)`, `ctx.caller()` is none and `ctx.config()` is `(C, P)`. The message carries the seed `s`, so it reaches `(M, P)` before `M` holds any state. A client finds `M` with `own_actor::<R>((C, P), key)` and lists `(M, P)` in the transaction.
 
 ## Nominate and cancel
 

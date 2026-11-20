@@ -56,8 +56,13 @@ pub enum AuthorityError {
     ByNominationOnly,
     /// A request for clearance arrived somewhere other than the config account.
     ClearanceNotAtConfig,
-    /// A role's rules returned a message to an actor of the program.
+    /// A role's rules returned a message to an actor of the program that is not the role's own
+    /// message to an actor other than the config.
     RoleSendsInProgram,
+    /// A handler sent a role's own message to an actor of the program.
+    HandlerSendsOwnMessage,
+    /// A role's own message reached an actor other than the role's own actor for its key.
+    NotOwnActor,
     /// A refusal of a role's own, printed with its crate's prefix.
     Role {
         /// The role crate's name, the prefix of the text.
@@ -71,7 +76,7 @@ pub enum AuthorityError {
 
 impl AuthorityError {
     /// Every refusal of the engine's own, for the table test.
-    pub const ALL: [Self; 24] = [
+    pub const ALL: [Self; 26] = [
         Self::NotInitialized,
         Self::ConfigDoesNotDecode,
         Self::MessageDoesNotDecode,
@@ -96,6 +101,8 @@ impl AuthorityError {
         Self::ByNominationOnly,
         Self::ClearanceNotAtConfig,
         Self::RoleSendsInProgram,
+        Self::HandlerSendsOwnMessage,
+        Self::NotOwnActor,
     ];
 
     /// The stable code. Append-only: a number is never reused or renumbered.
@@ -126,6 +133,8 @@ impl AuthorityError {
             Self::ByNominationOnly => 137,
             Self::ClearanceNotAtConfig => 138,
             Self::RoleSendsInProgram => 139,
+            Self::HandlerSendsOwnMessage => 140,
+            Self::NotOwnActor => 141,
             Self::Role { code, .. } => *code,
         }
     }
@@ -195,8 +204,14 @@ impl AuthorityError {
             Self::ByNominationOnly => {
                 format!("the {prose} is appointed by nomination, never installed")
             }
-            Self::RoleSendsInProgram => {
-                format!("the {prose} must not send a message to an actor of its own program")
+            Self::RoleSendsInProgram => format!(
+                "the {prose} may send its own program only its own message, to an actor other than the config"
+            ),
+            Self::HandlerSendsOwnMessage => {
+                "a handler must not send a role's own message to an actor of its program".into()
+            }
+            Self::NotOwnActor => {
+                format!("the {prose}'s own message reached an actor that is not its own for that key")
             }
             Self::Role { sentence, .. } => (*sentence).into(),
         }

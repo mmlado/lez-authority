@@ -4,6 +4,7 @@
 use lee_core::account::AccountId;
 use lee_core::program::SyncMessage;
 
+use crate::wire::own_message_role;
 use crate::*;
 
 /// One management operation on `R`'s slot, under `R`'s policy, and the sync messages the config
@@ -93,12 +94,16 @@ where
     Ok(Vec::new())
 }
 
-/// Role `R`'s sync messages, unless one goes to an actor of the program.
+/// Role `R`'s sync messages, unless one goes to an actor of the program and is not `R`'s own
+/// message to an actor other than the config.
 fn sendable<R: Role>(ctx: &Ctx, sends: Vec<SyncMessage>) -> Result<Vec<SyncMessage>, Refusal> {
-    // Every actor of the program takes a message from the config as already gated.
-    let in_program =
-        |sent: &SyncMessage| sent.to.program_account_id == ctx.config.program_account_id;
-    if sends.iter().any(in_program) {
+    // Every actor of the program takes the config's messages as gated, but hands a role's own to it.
+    let refused = |sent: &SyncMessage| {
+        sent.to.program_account_id == ctx.config.program_account_id
+            && (sent.to == ctx.config
+                || own_message_role(&sent.message).as_deref() != Some(R::NAME))
+    };
+    if sends.iter().any(refused) {
         return Err(Refusal::of::<R>(AuthorityError::RoleSendsInProgram));
     }
     Ok(sends)
@@ -277,6 +282,15 @@ pub trait Roles<C, M>: sealed::Sealed {
     /// sync messages it comes with.
     #[doc(hidden)]
     fn clear(ctx: &Ctx, config: &C) -> Result<Vec<SyncMessage>, Refusal>;
+    /// The role at `role`'s handling of its own message at an actor other than the config, and
+    /// the actor's new state.
+    #[doc(hidden)]
+    fn receive(
+        ctx: &Ctx,
+        role: usize,
+        state: &[u8],
+        message: &[u8],
+    ) -> Result<Option<Vec<u8>>, Refusal>;
 }
 
 impl<C, M, A> Roles<C, M> for (A,)
@@ -333,6 +347,15 @@ where
 
     fn clear(ctx: &Ctx, config: &C) -> Result<Vec<SyncMessage>, Refusal> {
         clears::<A, C>(ctx, config)
+    }
+
+    fn receive(
+        ctx: &Ctx,
+        _role: usize,
+        state: &[u8],
+        message: &[u8],
+    ) -> Result<Option<Vec<u8>>, Refusal> {
+        A::receive(ctx, state, message)
     }
 }
 
@@ -406,5 +429,18 @@ where
         let mut sends = clears::<A, C>(ctx, config)?;
         sends.extend(clears::<B, C>(ctx, config)?);
         Ok(sends)
+    }
+
+    fn receive(
+        ctx: &Ctx,
+        role: usize,
+        state: &[u8],
+        message: &[u8],
+    ) -> Result<Option<Vec<u8>>, Refusal> {
+        if role == 0 {
+            A::receive(ctx, state, message)
+        } else {
+            B::receive(ctx, state, message)
+        }
     }
 }

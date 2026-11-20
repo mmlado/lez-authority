@@ -53,7 +53,7 @@ fn run(
 
 #[test]
 fn codes_are_stable() {
-    let expected: [(AuthorityError, u16); 24] = [
+    let expected: [(AuthorityError, u16); 26] = [
         (AuthorityError::NotInitialized, 101),
         (AuthorityError::Renounced, 102),
         (AuthorityError::NotHolder, 103),
@@ -78,9 +78,22 @@ fn codes_are_stable() {
         (AuthorityError::ByNominationOnly, 137),
         (AuthorityError::ClearanceNotAtConfig, 138),
         (AuthorityError::RoleSendsInProgram, 139),
+        (AuthorityError::HandlerSendsOwnMessage, 140),
+        (AuthorityError::NotOwnActor, 141),
     ];
     for (error, code) in &expected {
         assert_eq!(error.code(), *code, "{error:?}");
+        assert!(
+            AuthorityError::ALL.contains(error),
+            "{error:?} is missing from ALL"
+        );
+        listed_in_all(error);
+    }
+    for error in &AuthorityError::ALL {
+        assert!(
+            expected.iter().any(|(listed, _)| listed == error),
+            "{error:?} is missing from the table"
+        );
     }
     let mut codes: Vec<u16> = AuthorityError::ALL
         .iter()
@@ -424,4 +437,38 @@ fn the_wire_keeps_the_program_s_encoding_and_marks_the_library_s() {
         borsh::from_slice::<Wire<u16>>(&borsh::to_vec(&7u16).unwrap()).unwrap(),
         program
     );
+}
+
+/// Every engine refusal, so a new one does not compile until someone lists it, beside the table
+/// and `ALL`.
+fn listed_in_all(error: &AuthorityError) {
+    match error {
+        AuthorityError::NotInitialized
+        | AuthorityError::ConfigDoesNotDecode
+        | AuthorityError::MessageDoesNotDecode
+        | AuthorityError::MissingSignature
+        | AuthorityError::NotOwnProgram
+        | AuthorityError::ForwardedNotAtConfig
+        | AuthorityError::NotThroughSeat
+        | AuthorityError::NotInstalled
+        | AuthorityError::AlreadyInstalled
+        | AuthorityError::NotDeployer
+        | AuthorityError::NotGenesis
+        | AuthorityError::NoNomination
+        | AuthorityError::NotNominee
+        | AuthorityError::SeedProofFailed
+        | AuthorityError::Renounced
+        | AuthorityError::NotHolder
+        | AuthorityError::ViaNotAllowed
+        | AuthorityError::SlotChanged
+        | AuthorityError::NotFromConfig
+        | AuthorityError::LibrarySend
+        | AuthorityError::ClearanceFromOutside
+        | AuthorityError::ByNominationOnly
+        | AuthorityError::ClearanceNotAtConfig
+        | AuthorityError::RoleSendsInProgram
+        | AuthorityError::HandlerSendsOwnMessage
+        | AuthorityError::NotOwnActor => {}
+        AuthorityError::Role { .. } => panic!("a role crate's refusal is not the engine's"),
+    }
 }

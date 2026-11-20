@@ -25,3 +25,5 @@ inherited-role = { package = "lez-sample-authority", path = "fixtures/lez-sample
 borsh = { version = "1", features = ["derive"] }
 lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone", tag = "v0.4.0-rc3" }
 lez-authority-macros = { path = "macros" }
+# The sha256 lee_core hashes PDAs with, which a risc0 guest runs accelerated.
+risc0-zkvm = { version = "3.0.5", default-features = false, features = ["std"] }
