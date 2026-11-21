@@ -3685,7 +3685,7 @@ dependencies = [
 [[package]]
 name = "lez-admin-authority"
 version = "0.2.0"
-source = "git+https://github.com/mmlado/lez-admin-authority?rev=23dfe4c2b4718989de64e822106e2ad2b9d4463e#23dfe4c2b4718989de64e822106e2ad2b9d4463e"
+source = "git+https://github.com/mmlado/lez-admin-authority?rev=a7ab4dc293cda03801e431053ff3940f7b6a102c#a7ab4dc293cda03801e431053ff3940f7b6a102c"
 dependencies = [
  "lez-admin-authority-macros",
  "lez-authority",
@@ -3694,7 +3694,7 @@ dependencies = [
 [[package]]
 name = "lez-admin-authority-macros"
 version = "0.2.0"
-source = "git+https://github.com/mmlado/lez-admin-authority?rev=23dfe4c2b4718989de64e822106e2ad2b9d4463e#23dfe4c2b4718989de64e822106e2ad2b9d4463e"
+source = "git+https://github.com/mmlado/lez-admin-authority?rev=a7ab4dc293cda03801e431053ff3940f7b6a102c#a7ab4dc293cda03801e431053ff3940f7b6a102c"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -3705,17 +3705,18 @@ dependencies = [
 [[package]]
 name = "lez-authority"
 version = "0.2.0"
-source = "git+https://github.com/mmlado/lez-authority?rev=6b30f886bba11ead50444c2c9e1ee1a08e843ade#6b30f886bba11ead50444c2c9e1ee1a08e843ade"
+source = "git+https://github.com/mmlado/lez-authority?rev=bb6091cf491ef9359c1d907ea0cfb3731c58126e#bb6091cf491ef9359c1d907ea0cfb3731c58126e"
 dependencies = [
  "borsh",
  "lee_core",
  "lez-authority-macros",
+ "risc0-zkvm",
 ]
 
 [[package]]
 name = "lez-authority-macros"
 version = "0.2.0"
-source = "git+https://github.com/mmlado/lez-authority?rev=6b30f886bba11ead50444c2c9e1ee1a08e843ade#6b30f886bba11ead50444c2c9e1ee1a08e843ade"
+source = "git+https://github.com/mmlado/lez-authority?rev=bb6091cf491ef9359c1d907ea0cfb3731c58126e#bb6091cf491ef9359c1d907ea0cfb3731c58126e"
 dependencies = [
  "proc-macro2",
  "quote",

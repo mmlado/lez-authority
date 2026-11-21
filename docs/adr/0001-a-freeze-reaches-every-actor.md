@@ -6,4 +6,4 @@ RFP-002 asks for a freeze that rejects any attempt to interact with the program 
 
 - **The config only.** No cost, but a program that keeps state at other actors keeps running through a freeze.
 - **A caller on every freezable message,** as the auto mode of v0.2 injected a signer into every gated instruction.
-- **The caller and an account the message names,** as the explicit target of the v0.2 proposal allowed. v0.2 dropped it, and it can come back as a marker if an integrator asks for it.
+- **The caller and an account the message names,** as the explicit target of the v0.2 proposal allowed. v0.2 dropped it, and it can come back as an attribute if an integrator asks for it.

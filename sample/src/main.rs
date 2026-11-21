@@ -90,6 +90,7 @@ mod tests {
     use lez_freeze_authority::lez_authority::LibraryMessage;
     use lez_freeze_authority::{
         AuthoritySlot, FreezeOp, Holder, Op, Slot, Wire, admin_op, freeze_authority_op, freeze_op,
+        marker_actor,
     };
     use sample_core::config_account;
 
@@ -168,8 +169,9 @@ mod tests {
         };
         let at_config = through_seat(DEPLOYER, initialized(), mint.into());
         assert!(at_config.response.post_state.is_none());
-        let [SyncMessage { to, message, .. }] =
-            <[SyncMessage; 1]>::try_from(at_config.response.sync_messages).unwrap();
+        let [check, SyncMessage { to, message, .. }] =
+            <[SyncMessage; 2]>::try_from(at_config.response.sync_messages).unwrap();
+        assert_eq!(check.to, marker_actor(config_actor(), DEPLOYER));
         assert_eq!(to, actor(OWNER));
         let credit: Wire<Message> = borsh::from_slice(&message).unwrap();
         let credited = run(
@@ -426,8 +428,9 @@ mod tests {
         let released = send(AUTHORITY, &frozen(), freeze_op(FreezeOp::Release));
         assert_eq!(released, appointed(AUTHORITY));
         let at_config = through_seat(DEPLOYER, borsh::to_vec(&released).unwrap(), mint(5));
-        let [SyncMessage { to, message, .. }] =
-            <[SyncMessage; 1]>::try_from(at_config.response.sync_messages).unwrap();
+        let [check, SyncMessage { to, message, .. }] =
+            <[SyncMessage; 2]>::try_from(at_config.response.sync_messages).unwrap();
+        assert_eq!(check.to, marker_actor(config_actor(), DEPLOYER));
         assert_eq!(to, actor(OWNER));
         let credit: Wire<Message> = borsh::from_slice(&message).unwrap();
         assert_eq!(credit, Message::Credit(5).into());

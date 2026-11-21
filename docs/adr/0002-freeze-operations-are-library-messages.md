@@ -4,4 +4,4 @@ The freeze authority's operations, freezing and releasing the program or one acc
 
 ## Considered options
 
-- **Variants of the program's own enum,** marked as needing the freeze authority and handled with helpers from the freeze crate. No engine change, and SPEL's IDL generator sees them with the rest of the enum. But the guard cannot tell those arms from the others, so any arm could change the freeze slot, and every program grows four variants and four arms, each marked exempt so that a release runs while frozen.
+- **Variants of the program's own enum,** each needing the freeze authority and handled with helpers from the freeze crate. No engine change, and SPEL's IDL generator sees them with the rest of the enum. But the guard cannot tell those arms from the others, so any arm could change the freeze slot, and every program grows four variants and four arms, each marked exempt so that a release runs while frozen.

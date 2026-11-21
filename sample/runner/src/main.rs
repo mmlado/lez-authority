@@ -699,7 +699,6 @@ async fn check_frozen<C: WalletSequencerClient>(
     let matches = found.as_ref().is_some_and(|found| {
         found.freeze.is_frozen()
             && found.freeze.authority_slot() == expected.freeze.authority_slot()
-            && found.freeze.frozen_accounts() == expected.freeze.frozen_accounts()
             && Config {
                 freeze: expected.freeze.clone(),
                 ..found.clone()
