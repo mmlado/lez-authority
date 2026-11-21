@@ -30,11 +30,11 @@ pub trait HasSlot<R: Role> {
 }
 
 /// Who may install, nominate and renounce role `Self` in a config `C`, what the operations and
-/// messages it defines for itself do, and which program messages may run. Every method holds the
-/// rule of a role that answers to nobody else, defines no operations or messages of its own and
-/// lets every message run, so such a role implements it empty. A role that answers to another, as a freeze
-/// authority answers to the admin, overrides the rules that differ and reads the other role's
-/// slot through `C`.
+/// messages it defines for itself do, and which program messages may run, over which state and
+/// with which writes. Every method holds the rule of a role that answers to nobody else, defines
+/// no operations or messages of its own and lets every message run and every write stand, so such
+/// a role implements it empty. A role that answers to another, as a freeze authority answers to
+/// the admin, overrides the rules that differ and reads the other role's slot through `C`.
 pub trait Policy<C>: Role + Sized
 where
     C: HasSlot<Self>,
@@ -45,12 +45,19 @@ where
     /// at its `roles(..)`. A guard called by hand is refused at `cargo build`.
     const BY_NOMINATION_ONLY: bool = false;
 
-    /// Whether the role's rules refuse program messages, as a freeze refuses every one while the
-    /// program is frozen. The guard asks [`Policy::may_run`] only of a role that sets it, so rules
-    /// a role does not declare here are never asked: at the config, and for a program message
-    /// handled at another actor of the program, through a request for clearance to the config. A guard takes one such role at most, since a
-    /// request for clearance names no role (ADR-0005), and two do not compile.
+    /// Whether the role's consent refuses program messages, as a freeze refuses every one while
+    /// the program is frozen. The guard asks [`Policy::may_run`] only of a role that sets it, so a
+    /// consent a role does not declare here is never asked: at the config, and for a program message
+    /// handled at another actor of the program, through a request for clearance to the config. A
+    /// guard takes one such role at most, since a request for clearance names no role (ADR-0005),
+    /// and two do not compile.
     const REFUSES_MESSAGES: bool = false;
+
+    /// Whether the role looks at the state of each actor the handler runs at, through
+    /// [`Policy::may_handle`] before the handler and [`Policy::may_write`] after it. The guard
+    /// asks only a role that sets it, so a program whose roles leave it unset pays nothing for
+    /// the looks.
+    const WATCHES_STATE: bool = false;
 
     /// Who may install the first holder of a slot that has none. By default whoever passes the
     /// program's init gate, at top level.
@@ -146,6 +153,38 @@ where
     fn receive(_ctx: &Ctx, _state: &[u8], _message: &[u8]) -> Result<Option<Vec<u8>>, Refusal> {
         Err(Refusal::of::<Self>(AuthorityError::MessageDoesNotDecode))
     }
+
+    /// Whether the handler may run at an actor of the program, from that actor's state. The guard
+    /// asks it of a role that sets [`Policy::WATCHES_STATE`], just before the handler at every
+    /// actor of the program, the config included. At the config that is after the holders the
+    /// message needs and the consent. It asks for a message exempt from the role too. So a role
+    /// can keep the program off any actor whose state it recognizes, as a freeze keeps it off its
+    /// marks. Its refusal comes before a handler that cannot read that state fails on it.
+    ///
+    /// The look is not told which actor it runs at. So an actor that holds none of the role's
+    /// state, such as a role's own actor before its first write, runs any handler. A management
+    /// operation, a seat's forward, a request for clearance and a role's own message run no
+    /// handler, so neither this look nor [`Policy::may_write`] sees them. `ctx.caller()` is none.
+    /// By default the handler runs at every actor.
+    ///
+    /// # Errors
+    /// The refusal that stops the message, and the transaction with it.
+    fn may_handle(_ctx: &Ctx, _state: &[u8]) -> Result<(), Refusal> {
+        Ok(())
+    }
+
+    /// Whether the handler's write may stand, from the state of the actor it ran at, `before`,
+    /// and the state it wrote there, `after`, or `None` when it kept the state. The guard asks it
+    /// of a role that sets [`Policy::WATCHES_STATE`] after the handler, wherever it asked
+    /// [`Policy::may_handle`], once the handler's sends are checked. So a role can keep the
+    /// program from writing state it recognizes, as a freeze keeps it from writing a mark.
+    /// `ctx.caller()` is none. By default every write stands.
+    ///
+    /// # Errors
+    /// The refusal that stops the message, and the transaction with it.
+    fn may_write(_ctx: &Ctx, _before: &[u8], _after: Option<&[u8]>) -> Result<(), Refusal> {
+        Ok(())
+    }
 }
 
 /// Who may install the first holder.
@@ -159,7 +198,8 @@ pub enum InitGate {
 }
 
 /// What a [`Policy`] sees: who is speaking, if the message came through the sender's own
-/// actor, the config's actor, and the program's init gate.
+/// actor, the config's actor, and the program's init gate. At a role's own message and at the
+/// looks around the handler it holds no caller.
 pub struct Ctx {
     pub(crate) caller: Option<Caller>,
     pub(crate) config: Actor,
@@ -167,6 +207,15 @@ pub struct Ctx {
 }
 
 impl Ctx {
+    /// A context with no caller.
+    pub(crate) const fn without_caller(config: Actor, gate: InitGate) -> Self {
+        Self {
+            caller: None,
+            config,
+            gate,
+        }
+    }
+
     /// The config's actor, which also names the program.
     #[must_use]
     pub const fn config(&self) -> Actor {
@@ -187,7 +236,8 @@ impl Ctx {
         SyncMessage::new(to, &own).with_pda_seeds([seed])
     }
 
-    /// The sender, when the message came through the sender's own actor.
+    /// The sender, when the message came through the sender's own actor. None at a role's own
+    /// message and at the looks around the handler.
     #[must_use]
     pub fn caller(&self) -> Option<&Caller> {
         self.caller.as_ref()

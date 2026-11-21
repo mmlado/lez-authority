@@ -14,6 +14,7 @@ mod role_slots;
 mod routing;
 mod sends;
 mod slot;
+mod watching;
 
 const KEY: AccountId = AccountId::new([1; 32]);
 const OTHER: AccountId = AccountId::new([2; 32]);
@@ -33,8 +34,7 @@ fn held(account: AccountId) -> AuthoritySlot {
     AuthoritySlot::held(Holder { account, via: None })
 }
 
-// A program with two roles. The second answers to the first, as a freeze authority would to
-// the admin.
+// Two roles shaped like the admin and a freeze authority that answers to it.
 
 struct First;
 
@@ -219,8 +219,7 @@ fn two(second: Option<AccountId>) -> Two {
     }
 }
 
-// A role that keeps more than its holder in its slot, as a freeze authority keeps what it
-// froze.
+// A role whose slot holds more than its holder, as a freeze authority's holds what it froze.
 
 struct Marking;
 

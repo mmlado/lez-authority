@@ -38,9 +38,11 @@ hop 1    (C, P) config  caller = None
                         state present and decodes                  else E101 / E109
                         may_run of the role that refuses messages, unless exempt   else its code
                         its consent sends an actor of P only its own message, never (C, P)   else E139
+                        each role that watches state: may_handle(state)   else its code
                         handler(input, message)
                         no message the handler sends is a library message to (C, P)   else E135
                         no message the handler sends is a role's own message to an actor of P   else E140
+                        each role that watches state: may_write(state before, state written)   else its code
                         the handler's write decodes, every slot unchanged   else E109 / E126
                         sent: the consent's sync messages, then the handler's
 ```
@@ -66,9 +68,11 @@ hop 2    (C, P) config  from an actor of P                         else E119
                             holder.via != caller.via               E120
                         may_run of the role that refuses messages, unless exempt   else its code
                         its consent sends an actor of P only its own message, never (C, P)   else E139
+                        each role that watches state: may_handle(state)   else its code
                         handler(input, message)
                         no message the handler sends is a library message to (C, P)   else E135
                         no message the handler sends is a role's own message to an actor of P   else E140
+                        each role that watches state: may_write(state before, state written)   else its code
                         the handler's write decodes, every slot unchanged   else E109 / E126
                         sent: the consent's sync messages, then the handler's
 ```
@@ -84,9 +88,11 @@ hop 1    (A, P) seat    as above
 hop 2    (C, P) config  as above, and the handler's response sends a #[from_config] message to (T, P)
 
 hop 3    (T, P) target  from == Some((C, P)), by exact actor       else E123
+                        each role that watches state: may_handle(state)   else its code
                         handler(input, message) over the target's own state
                         no message the handler sends is a library message to (C, P)   else E135
                         no message the handler sends is a role's own message to an actor of P   else E140
+                        each role that watches state: may_write(state before, state written)   else its code
 ```
 
 "From an actor of P" is not enough at hop 3, because any actor of `P` passes it: a stranger's seat could send the same message to a target. The target compares the whole actor. A `#[from_config]` message from a client, from another actor, or at the config itself, is E123. Every actor reached must be in the transaction's actor list, so a client lists the target too. An unmarked message the config sends runs at the target as well, but so would the same message from anyone, which is what the mark is for.
@@ -96,9 +102,11 @@ hop 3    (T, P) target  from == Some((C, P)), by exact actor       else E123
 ```text
 client   root (A, P)    actors [(A, P), (C, P)]    signers as the program needs    message an unmarked variant, not exempt
 
-hop 1    (A, P) actor   handler(input, message) over the actor's own state
+hop 1    (A, P) actor   each role that watches state: may_handle(state)   else its code
+                        handler(input, message) over the actor's own state
                         no message the handler sends is a library message to (C, P)   else E135
                         no message the handler sends is a role's own message to an actor of P   else E140
+                        each role that watches state: may_write(state before, state written)   else its code
                         a role refuses program messages and the message is not exempt from it:
                             send sync to (C, P): Clearance { authorized: is_authorized }
 
@@ -115,6 +123,10 @@ The same holds at a target for a message the config sends on, `#[from_config]` o
 ## What a role sends
 
 The consent of the role that refuses program messages, and a role's own operations, may come with sync messages, which the config sends: the consent's ahead of the handler's, or alone at a request for clearance, and an operation's with the config it writes. Each runs in the same transaction, so a refusal there reverts the whole transaction. The guard refuses a role whose messages include one to an actor of `P` (E139), but for the role's own message to an actor other than `(C, P)`. Every actor of `P` takes any other message from `(C, P)` as already gated, a `#[from_config]` message and one that needs a holder alike, and a role's rules pass no other role's gate. So a role reaches the program only through its own messages, at its own actors. Like the handler's, its messages carry the grants the config's delivery came with, and a seed it names authorizes a receiver whose account is the PDA of `P` that seed derives. Every actor reached must be in the transaction's actor list, so a client lists those too.
+
+## What a role watches
+
+A role that sets `Policy::WATCHES_STATE` is asked twice around every handler at every actor of `P`, `(C, P)` included. Before the handler, `Policy::may_handle` gets the actor's state. After it, once the handler's sends are checked, `Policy::may_write` gets the state before and the state the handler wrote, or none when it kept the state. The flows above show where. So a role refuses before a handler that cannot read its state fails on it. Both looks cover exempt messages, since the rule is about the actor's state, not the message. Neither is told which actor it runs at, so a role refuses by the state it recognizes there, and an actor that holds none of the role's state runs any handler. A management operation, a seat's forward, a request for clearance and a role's own message run no handler, so neither look sees them. A role that leaves the switch unset is never asked.
 
 ## A role's own message
 

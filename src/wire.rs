@@ -181,7 +181,8 @@ impl<M: BorshDeserialize> BorshDeserialize for Wire<M> {
 /// What the program's messages declare to the guard. Derive it with `#[only(Role)]` on a
 /// message that needs a role's holder, the way `onlyOwner` marks a Solidity function,
 /// `#[from_config]` on one that only the config account may send, and `#[exempt(Role)]` on one
-/// that runs where that role's rules would refuse it. The derive compares roles by
+/// that runs where that role's [`Policy::may_run`] would refuse it, though a role that watches
+/// state still looks at the state around its handler. The derive compares roles by
 /// [`Role::NAME`], as the guard does, so a role crate linked twice is still one role. A
 /// hand-written impl does the same and lists its roles in [`Gated::MARKED`].
 ///

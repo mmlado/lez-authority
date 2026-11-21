@@ -44,7 +44,7 @@ The first of a program's roles. Its install creates the config, and the guard's 
 _Avoid_: main role, primary role
 
 **Policy**:
-A role's rules: who may install its first holder, who may nominate, who may renounce, what renounce leaves, what the operations and the own messages it defines for itself do, and whether a program message may run. A consent and an operation may come with sync messages, which the config sends. A role that answers to nobody keeps the defaults. A role that answers to another, as a freeze authority answers to the admin, reads that role's slot.
+A role's rules: who may install its first holder, who may nominate, who may renounce, what renounce leaves, what the operations and the own messages it defines for itself do, and whether a program message may run, over which state and with which write. A consent and an operation may come with sync messages, which the config sends. A role that answers to nobody keeps the defaults. A role that answers to another, as a freeze authority answers to the admin, reads that role's slot.
 _Avoid_: permissions, access rules
 
 **Guard**:
@@ -52,7 +52,7 @@ What runs in front of a program's handler: it forwards at seats, unwraps hops at
 _Avoid_: dispatcher, framework, runtime
 
 **Hook**:
-A point in the guard where a role's policy adds to what the guard does, with the guard's own rules kept around it. A consent that comes with sync messages is one, an operation that does is another, and a role's own message handled at another actor of the program is a third.
+A point in the guard where a role's policy adds to what the guard does, with the guard's own rules kept around it. A consent that comes with sync messages is one, an operation that does is another, a role's own message handled at the role's own actor is a third, and a look at the state before and after the plain handler is a fourth.
 _Avoid_: plugin, middleware, interceptor
 
 **Plain handler**:
@@ -108,7 +108,7 @@ A program message that only the config account may send, as it does to the progr
 _Avoid_: internal message, hub message
 
 **Exempt message**:
-A program message its program marked to run where one role's rules would refuse it, as an exempt message runs through a freeze. The mark names the role and covers that message only. It still needs its holders.
+A program message its program marked to run where one role's consent would refuse it, as an exempt message runs through a freeze. The mark names the role and covers that message only. It still needs its holders.
 _Avoid_: whitelisted message, carve-out
 
 **Hub**:

@@ -74,11 +74,7 @@ fn marker() -> Actor {
 
 /// The context the config gives a role, with no caller.
 fn config_ctx() -> Ctx {
-    Ctx {
-        caller: None,
-        config: config_actor(),
-        gate: InitGate::Deployer,
-    }
+    Ctx::without_caller(config_actor(), InitGate::Deployer)
 }
 
 /// Role `R`'s own message for `key`, as its consent or operation returns it.

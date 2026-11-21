@@ -60,8 +60,9 @@ pub fn derive_has_slot(input: TokenStream) -> TokenStream {
 
 /// Implements `Gated` from markers on the message enum's variants: `#[only(R)]` on a message
 /// that needs role `R`'s holder, one role per message, `#[from_config]` on one that only the
-/// config account may send, and `#[exempt(R)]` on one that runs where role `R`'s rules would
-/// refuse it, one role per message.
+/// config account may send, and `#[exempt(R)]` on one that runs where role `R`'s `may_run`
+/// would refuse it, one role per message. A role that watches state still looks at the state
+/// around its handler.
 ///
 /// ```ignore
 /// #[derive(BorshSerialize, BorshDeserialize, Gated)]

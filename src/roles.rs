@@ -251,6 +251,9 @@ pub trait Roles<C, M>: sealed::Sealed {
     /// checks at compile time.
     #[doc(hidden)]
     const EXEMPTIONS_REFUSE: bool;
+    /// Whether a role looks at the state around the handler.
+    #[doc(hidden)]
+    const WATCHES_STATE: bool;
     /// The place in the tuple of the role with this name.
     #[doc(hidden)]
     fn index(name: &str) -> Option<usize>;
@@ -291,6 +294,36 @@ pub trait Roles<C, M>: sealed::Sealed {
         state: &[u8],
         message: &[u8],
     ) -> Result<Option<Vec<u8>>, Refusal>;
+    /// Asks each role that watches state whether the handler may run over this state.
+    #[doc(hidden)]
+    fn may_handle(ctx: &Ctx, state: &[u8]) -> Result<(), Refusal>;
+    /// Asks each role that watches state whether the handler's write may stand.
+    #[doc(hidden)]
+    fn may_write(ctx: &Ctx, before: &[u8], after: Option<&[u8]>) -> Result<(), Refusal>;
+}
+
+/// Role `R`'s look at an actor's state before the handler, if it watches state.
+fn may_handle<R, C>(ctx: &Ctx, state: &[u8]) -> Result<(), Refusal>
+where
+    R: Policy<C>,
+    C: HasSlot<R>,
+{
+    if !R::WATCHES_STATE {
+        return Ok(());
+    }
+    R::may_handle(ctx, state)
+}
+
+/// Role `R`'s look at the handler's write, if it watches state.
+fn may_write<R, C>(ctx: &Ctx, before: &[u8], after: Option<&[u8]>) -> Result<(), Refusal>
+where
+    R: Policy<C>,
+    C: HasSlot<R>,
+{
+    if !R::WATCHES_STATE {
+        return Ok(());
+    }
+    R::may_write(ctx, before, after)
 }
 
 impl<C, M, A> Roles<C, M> for (A,)
@@ -307,6 +340,7 @@ where
     const AT_MOST_ONE_REFUSES: bool = true;
     const EXEMPTIONS_REFUSE: bool =
         exemptions_refuse(&[A::NAME], &[A::REFUSES_MESSAGES], M::EXEMPTED);
+    const WATCHES_STATE: bool = A::WATCHES_STATE;
 
     fn index(name: &str) -> Option<usize> {
         (name == A::NAME).then_some(0)
@@ -357,6 +391,14 @@ where
     ) -> Result<Option<Vec<u8>>, Refusal> {
         A::receive(ctx, state, message)
     }
+
+    fn may_handle(ctx: &Ctx, state: &[u8]) -> Result<(), Refusal> {
+        may_handle::<A, C>(ctx, state)
+    }
+
+    fn may_write(ctx: &Ctx, before: &[u8], after: Option<&[u8]>) -> Result<(), Refusal> {
+        may_write::<A, C>(ctx, before, after)
+    }
 }
 
 impl<C, M, A, B> Roles<C, M> for (A, B)
@@ -377,6 +419,7 @@ where
         &[A::REFUSES_MESSAGES, B::REFUSES_MESSAGES],
         M::EXEMPTED,
     );
+    const WATCHES_STATE: bool = A::WATCHES_STATE || B::WATCHES_STATE;
 
     fn index(name: &str) -> Option<usize> {
         if name == A::NAME {
@@ -442,5 +485,15 @@ where
         } else {
             B::receive(ctx, state, message)
         }
+    }
+
+    fn may_handle(ctx: &Ctx, state: &[u8]) -> Result<(), Refusal> {
+        may_handle::<A, C>(ctx, state)?;
+        may_handle::<B, C>(ctx, state)
+    }
+
+    fn may_write(ctx: &Ctx, before: &[u8], after: Option<&[u8]>) -> Result<(), Refusal> {
+        may_write::<A, C>(ctx, before, after)?;
+        may_write::<B, C>(ctx, before, after)
     }
 }

@@ -80,10 +80,14 @@ pub const fn seed(label: &[u8]) -> PdaSeed {
 ///   that needs an initialized config and the consent of the role that refuses program
 ///   messages, unless the message is exempt from it, and the slots are checked afterwards.
 ///
-/// Wherever the handler runs, the guard refuses a response that sends the config a library
-/// message, which the config would take for a hop from that actor, and one that sends a role's
-/// own message to an actor of the program (E140). A handler at the config that sent one would
-/// pose as the role at the actor it reaches.
+/// Wherever the handler runs, the guard first asks each role that sets
+/// [`Policy::WATCHES_STATE`] whether the handler may run over the actor's state, through
+/// [`Policy::may_handle`]. At the config that comes after the holders and the consent. After the
+/// handler the guard refuses a response that sends the config a library message, which the
+/// config would take for a hop from that actor. It also refuses one that sends a role's own
+/// message to an actor of the program (E140), since a handler at the config that sent one would
+/// pose as the role at the actor it reaches. Then it asks the same roles whether the handler's
+/// write may stand, through [`Policy::may_write`].
 ///
 /// The refusing role's consent, and a role's own operation, may come with sync messages, which
 /// the config sends in the same transaction: the consent's ahead of the handler's own. A message
@@ -162,15 +166,22 @@ where
     let config_actor = Actor::new(config_account(program, seed), program);
     let at_config = input.receiver == config_actor;
     let from_config = input.from == Some(config_actor);
-    // The config trusts a hop from any actor of this program, so a handler must not send one.
     let handler = |input: &ReceiveInput, message: M| {
+        let ctx = Ctx::without_caller(config_actor, gate);
+        if Rs::WATCHES_STATE {
+            Rs::may_handle(&ctx, &input.pre_state)?;
+        }
         let response = handler(input, message);
+        // The config trusts a hop from any actor of this program, so a handler must not send one.
         if sends_library_message(&response, config_actor) {
             return Err(refuse(AuthorityError::LibrarySend));
         }
         // An actor takes a role's own message from the config as the role's.
         if sends_own_message(&response, program) {
             return Err(refuse(AuthorityError::HandlerSendsOwnMessage));
+        }
+        if Rs::WATCHES_STATE {
+            Rs::may_write(&ctx, &input.pre_state, response.post_state.as_deref())?;
         }
         Ok(response)
     };
@@ -235,11 +246,7 @@ where
                     error: AuthorityError::NotOwnActor,
                 });
             }
-            let ctx = Ctx {
-                caller: None,
-                config: config_actor,
-                gate,
-            };
+            let ctx = Ctx::without_caller(config_actor, gate);
             let state = Rs::receive(&ctx, role, &input.pre_state, &message)?;
             Ok(state.map_or_else(Response::keep_state, Response::set_state))
         }
