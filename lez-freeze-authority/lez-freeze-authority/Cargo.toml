@@ -1,0 +1,13 @@
+[package]
+name = "lez-freeze-authority"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Freeze authority for LEZ actor programs: the freeze role of lez-authority, answering to the admin of lez-admin-authority"
+repository = "https://github.com/mmlado/lez-freeze-authority"
+readme = "../README.md"
+
+[dependencies]
+borsh.workspace = true
+lee_core.workspace = true
+lez-admin-authority.workspace = true
