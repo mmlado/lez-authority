@@ -9,11 +9,12 @@ on:
   push:
     paths:
       - "**/Cargo.lock"
-      - ".cargo/audit.toml"
+      - "**/.cargo/audit.toml"
   workflow_dispatch:
 
 jobs:
   audit:
+    name: Audit, workspace
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,4 +22,22 @@ jobs:
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
       - name: Audit against the recorded policy
+        run: cargo audit
+
+  runners:
+    name: Audit, ${{ matrix.role }} runner
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        role: [admin, freeze]
+    defaults:
+      run:
+        working-directory: lez-${{ matrix.role }}-authority/sample/runner
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: Audit against the runner's policy
         run: cargo audit
