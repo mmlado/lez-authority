@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Build and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Prefetch dependency sources
+        run: cargo fetch --locked
+      - name: Formatting
+        run: cargo fmt --check
+      # The runner links the LEZ wallet stack, which is slow and needs pcsc. The
+      # scheduled consumer-build job builds it.
+      - name: Clippy
+        run: cargo clippy --workspace --exclude sample-runner --all-targets --locked
+      - name: Tests
+        run: cargo test --workspace --exclude sample-runner --locked
+
+  consumer-check:
+    name: Consumer fixture host check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ci/consumer-fixture/guest
+      - name: Prefetch dependency sources
+        run: cargo fetch --locked --manifest-path ci/consumer-fixture/guest/Cargo.toml
+      - name: Check the consumer fixture on the host
+        run: cargo check --locked --manifest-path ci/consumer-fixture/guest/Cargo.toml

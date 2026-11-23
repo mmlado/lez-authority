@@ -1,0 +1,18 @@
+[package]
+name = "sample-runner"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Drives the sample on a local dev sequencer through the LEZ wallet library"
+publish = false
+
+[dependencies]
+anyhow = "1"
+borsh.workspace = true
+lee_core.workspace = true
+lez-admin-authority.workspace = true
+program_loader_core.workspace = true
+risc0-binfmt = "3.0.5"
+sample_core = { path = "../core" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+wallet.workspace = true

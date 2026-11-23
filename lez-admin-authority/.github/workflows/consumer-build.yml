@@ -1,0 +1,50 @@
+name: Consumer build
+
+# The real risc0 guest builds and the runner. Slow, so on demand and weekly.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 4 * * 1"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  guests:
+    name: Guest builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+      - name: Install the risc0 toolchain
+        run: |
+          curl -L https://risczero.com/install | bash
+          echo "$HOME/.risc0/bin" >> "$GITHUB_PATH"
+          "$HOME/.risc0/bin/rzup" install
+      - name: Build the sample guest
+        run: cargo build --release --manifest-path sample/methods/Cargo.toml
+      - name: Assert the sample program binary exists
+        run: test -f sample/methods/target/riscv-guest/sample-methods/sample/riscv32im-risc0-zkvm-elf/release/sample.bin
+      - name: Build the consumer fixture guest
+        run: cargo build --release --locked --manifest-path ci/consumer-fixture/Cargo.toml
+      - name: Assert the fixture program binary exists
+        run: test -f ci/consumer-fixture/target/riscv-guest/consumer-fixture-methods/consumer-fixture-guest/riscv32im-risc0-zkvm-elf/release/consumer_fixture.bin
+
+  runner:
+    name: Runner build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+      # The LEZ wallet crate links pcsc.
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libpcsclite-dev
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: runner
+      - name: Build the runner
+        run: cargo build --release --locked -p sample-runner

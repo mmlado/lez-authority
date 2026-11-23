@@ -1,0 +1,12 @@
+[package]
+name = "sample-minimal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The smallest program with an admin: one open value, one admin-only value, nothing on other accounts"
+publish = false
+
+[dependencies]
+borsh.workspace = true
+lee_core.workspace = true
+lez-admin-authority.workspace = true
