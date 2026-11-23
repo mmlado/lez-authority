@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "The admin attribute: lez-authority's guard on a plain LEZ handler, with the admin as the program's role"
-repository = "https://github.com/mmlado/lez-admin-authority"
+repository.workspace = true
 readme = "../README.md"
 
 [lib]

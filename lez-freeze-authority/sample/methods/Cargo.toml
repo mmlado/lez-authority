@@ -1,5 +1,5 @@
 [package]
-name = "sample-methods"
+name = "freeze-sample-methods"
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
@@ -17,9 +17,9 @@ methods = [".."]
 
 # For tests/overhead.rs only: the host executor that runs the guest and counts cycles.
 [dev-dependencies]
+freeze-sample-core = { path = "../core" }
 borsh = { version = "1", features = ["derive"] }
 lee = { git = "https://github.com/logos-blockchain/logos-execution-zone", tag = "v0.4.0-rc3" }
 lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone", tag = "v0.4.0-rc3" }
 lez-freeze-authority = { path = "../../lez-freeze-authority" }
 risc0-zkvm = { version = "3.0.5", default-features = false, features = ["std", "client"] }
-sample_core = { path = "../core" }

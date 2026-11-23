@@ -8,14 +8,14 @@
 //! freeze, the admin replaces the freeze authority while frozen, the successor releases, the
 //! admin clears the notice and mints again, and a transfer lands.
 //!
-//! Usage: sample-runner <sample.bin> <payer account id>
+//! Usage: freeze-sample-runner <freeze-sample.bin> <payer account id>
 
 use anyhow::{Context, Result, anyhow};
+use freeze_sample_core::{Balance, CONFIG_SEED, Config, Message, config_account};
 use lee_core::account::{AccountId, Actor};
 use lez_freeze_authority::{
     AuthoritySlot, FreezeOp, Holder, Op, Slot, Wire, admin_op, freeze_authority_op, freeze_op,
 };
-use sample_core::{Balance, CONFIG_SEED, Config, Message, config_account};
 use wallet::{
     AccountIdentity, AccountMention, DeclaredFee, DryRunReport, ExecutionFailureKind, WalletCore,
     WalletSequencerClient, program_facades::program_loader::ProgramLoader,
@@ -26,7 +26,7 @@ const UNDECLARED: &str = "which is neither a declared public actor nor private";
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let usage = "usage: sample-runner <sample.bin> <payer account id>";
+    let usage = "usage: freeze-sample-runner <freeze-sample.bin> <payer account id>";
     let mut args = std::env::args().skip(1);
     let bin = args.next().context(usage)?;
     let payer: AccountId = args

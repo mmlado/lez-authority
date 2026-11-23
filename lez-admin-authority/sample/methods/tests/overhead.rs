@@ -1,13 +1,13 @@
 //! Cycle counts per hop, from the real guest under the risc0 executor, the way the sequencer
 //! runs it. Prints a table; run with `--nocapture`.
 
+use admin_sample_core::{Config, Message, config_account};
 use lee::program::Program;
 use lee_core::account::{AccountId, Actor, ActorState};
 use lee_core::program::ReceiveInput;
 use lez_admin_authority::lez_authority::{Forwarded, LibraryMessage};
 use lez_admin_authority::{AdminOp, AuthoritySlot, Holder, Wire, admin_op};
 use risc0_zkvm::{ExecutorEnv, default_executor};
-use sample_core::{Config, Message, config_account};
 
 const PROGRAM: AccountId = AccountId::new([0xA0; 32]);
 const DEPLOYER: AccountId = PROGRAM;
@@ -37,7 +37,7 @@ fn run(input: &ReceiveInput) -> u64 {
     builder.session_limit(Some(BUDGET));
     Program::write_receive_input(input, &mut builder).unwrap();
     let env = builder.build().unwrap();
-    let info = default_executor().execute(env, sample_methods::SAMPLE_ELF).expect("the guest runs");
+    let info = default_executor().execute(env, admin_sample_methods::ADMIN_SAMPLE_ELF).expect("the guest runs");
     info.cycles()
 }
 
@@ -84,7 +84,7 @@ fn cycles_per_hop() {
     println!("| admin setter | 2 | {} |", seat + by_name["config hop, SetAdminValue"]);
     println!("| nominate | 2 | {} |", seat + by_name["config hop, Nominate"]);
     println!("| target setter | 3 | {} |", seat + by_name["config hop, SetTargetValue, sends to the target"] + by_name["target hop, TargetValue"]);
-    println!("\nprogram binary: {} bytes", sample_methods::SAMPLE_ELF.len());
+    println!("\nprogram binary: {} bytes", admin_sample_methods::ADMIN_SAMPLE_ELF.len());
     for cycles in by_name.values() {
         assert!(*cycles > 0 && *cycles < BUDGET);
     }

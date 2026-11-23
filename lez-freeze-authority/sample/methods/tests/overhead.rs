@@ -4,6 +4,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use freeze_sample_core::{Balance, Config, Message, NOTICE_MAX, config_account};
 use lee::program::Program;
 use lee_core::account::{AccountId, Actor, ActorState};
 use lee_core::execution_state::{BoundaryStep, Delivery, PublicExecutionContext};
@@ -11,7 +12,6 @@ use lee_core::program::{MessageEnvelope, ReceiveInput};
 use lez_freeze_authority::lez_authority::{Clearance, Forwarded, LibraryMessage};
 use lez_freeze_authority::{AuthoritySlot, Holder, Slot, Wire};
 use risc0_zkvm::{ExecutorEnv, default_executor};
-use sample_core::{Balance, Config, Message, NOTICE_MAX, config_account};
 
 const PROGRAM: AccountId = AccountId::new([0xA0; 32]);
 const DEPLOYER: AccountId = PROGRAM;
@@ -50,7 +50,7 @@ fn run(input: &ReceiveInput) -> u64 {
     Program::write_receive_input(input, &mut builder).unwrap();
     let env = builder.build().unwrap();
     let info = default_executor()
-        .execute(env, sample_methods::SAMPLE_ELF)
+        .execute(env, freeze_sample_methods::FREEZE_SAMPLE_ELF)
         .expect("the guest runs");
     info.cycles()
 }
@@ -200,7 +200,7 @@ fn cycles_per_hop() {
     );
     println!(
         "\nprogram binary: {} bytes",
-        sample_methods::SAMPLE_ELF.len()
+        freeze_sample_methods::FREEZE_SAMPLE_ELF.len()
     );
     for cycles in by_name.values() {
         assert!(*cycles > 0 && *cycles < BUDGET);

@@ -15,10 +15,10 @@
 //! transaction that proves for that account.
 
 use borsh::BorshDeserialize;
+use freeze_sample_core::{Balance, CONFIG_SEED, Config, Message, NOTICE_MAX};
 use lee_core::account::Actor;
 use lee_core::program::{ReceiveInput, Response};
 use lez_freeze_authority::{Admin, Freeze};
-use sample_core::{Balance, CONFIG_SEED, Config, Message, NOTICE_MAX};
 
 #[lez_freeze_authority::guard(roles(Admin, Freeze), config = Config, seed = CONFIG_SEED)]
 fn handle_message(input: &ReceiveInput, message: Message) -> Response {
@@ -83,6 +83,7 @@ lee_core::actor_entrypoint!(handle_message);
 mod tests {
     use std::collections::BTreeMap;
 
+    use freeze_sample_core::config_account;
     use lee_core::{
         account::{AccountId, ActorState},
         program::{SyncMessage, Transition},
@@ -92,7 +93,6 @@ mod tests {
         AuthoritySlot, FreezeOp, Holder, Op, Slot, Wire, admin_op, freeze_authority_op, freeze_op,
         marker_actor,
     };
-    use sample_core::config_account;
 
     use super::*;
 

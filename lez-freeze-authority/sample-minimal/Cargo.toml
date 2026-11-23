@@ -1,5 +1,5 @@
 [package]
-name = "sample-minimal"
+name = "freeze-sample-minimal"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

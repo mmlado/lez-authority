@@ -25,11 +25,11 @@ just wallet-import-test-accounts             # two genesis-funded accounts, take
 
 ## 3. Guest binary
 
-From this repo, with the risc0 toolchain installed through `rzup`:
+From the `lez-freeze-authority` folder of this repository, with the risc0 toolchain installed through `rzup`:
 
 ```sh
 cargo build --release --manifest-path sample/methods/Cargo.toml
-ls sample/methods/target/riscv-guest/sample-methods/sample/riscv32im-risc0-zkvm-elf/release/sample.bin
+ls sample/methods/target/riscv-guest/freeze-sample-methods/freeze-sample/riscv32im-risc0-zkvm-elf/release/freeze-sample.bin
 ```
 
 ## 4. Run
@@ -37,8 +37,8 @@ ls sample/methods/target/riscv-guest/sample-methods/sample/riscv32im-risc0-zkvm-
 With the same `LEE_WALLET_HOME_DIR`, and `r0vm` on the `PATH`: the wallet runs each call through it before sending.
 
 ```sh
-cargo run --release -p sample-runner -- \
-  sample/methods/target/riscv-guest/sample-methods/sample/riscv32im-risc0-zkvm-elf/release/sample.bin \
+cargo run --release --manifest-path sample/runner/Cargo.toml -- \
+  sample/methods/target/riscv-guest/freeze-sample-methods/freeze-sample/riscv32im-risc0-zkvm-elf/release/freeze-sample.bin \
   <PAYER>
 ```
 

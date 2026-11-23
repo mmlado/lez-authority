@@ -1,11 +1,11 @@
 //! Drives the sample on a local dev sequencer and reads the config back after each step.
 //!
-//! Usage: sample-runner <sample.bin> <payer account id>
+//! Usage: admin-sample-runner <admin-sample.bin> <payer account id>
 
+use admin_sample_core::{CONFIG_SEED, Config, Message, TargetState, config_account};
 use anyhow::{Context, Result, anyhow};
 use lee_core::account::{AccountId, Actor};
 use lez_admin_authority::{AdminOp, AuthoritySlot, Holder, Wire, admin_op};
-use sample_core::{CONFIG_SEED, Config, Message, TargetState, config_account};
 use wallet::{
     AccountIdentity, AccountMention, DeclaredFee, ExecutionFailureKind, WalletCore,
     WalletSequencerClient, program_facades::program_loader::ProgramLoader,
@@ -13,7 +13,7 @@ use wallet::{
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let usage = "usage: sample-runner <sample.bin> <payer account id>";
+    let usage = "usage: admin-sample-runner <admin-sample.bin> <payer account id>";
     let mut args = std::env::args().skip(1);
     let bin = args.next().context(usage)?;
     let payer: AccountId = args

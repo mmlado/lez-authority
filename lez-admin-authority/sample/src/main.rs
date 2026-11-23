@@ -11,10 +11,10 @@
 //! message at the config is refused. The first write to the config account needs
 //! `PublicAccountEvidence::Pda { program, seed }` in the transaction.
 
+use admin_sample_core::{CONFIG_SEED, Config, Message, TargetState};
 use borsh::BorshDeserialize;
 use lee_core::account::Actor;
 use lee_core::program::{ReceiveInput, Response};
-use sample_core::{CONFIG_SEED, Config, Message, TargetState};
 
 #[lez_admin_authority::admin(config = Config, seed = CONFIG_SEED)]
 fn handle_message(input: &ReceiveInput, message: Message) -> Response {
@@ -55,13 +55,13 @@ lee_core::actor_entrypoint!(handle_message);
 
 #[cfg(test)]
 mod tests {
+    use admin_sample_core::config_account;
     use lee_core::{
         account::{AccountId, Actor, ActorState},
         program::{SyncMessage, Transition},
     };
     use lez_admin_authority::lez_authority::{Forwarded, LibraryMessage};
     use lez_admin_authority::{AdminOp, AuthoritySlot, Holder, InitGate, Wire, admin_op};
-    use sample_core::config_account;
 
     use super::*;
 
