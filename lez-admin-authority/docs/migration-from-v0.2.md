@@ -88,7 +88,7 @@ Numbers up to 116 follow the v0.2 table where a refusal has the same meaning. Th
 | 114 | `NotNominee` | `NotNominee` |
 | 115 | `NotGenesisAdmin` | `NotGenesis` |
 | 116 | `ConfigNotOwned` | retired, the config account is the program's own actor |
-| 117 to 135 | | new, the routing refusals: see the [table](https://github.com/mmlado/lez-authority#refusals) |
+| 117 to 135 | | new, the routing refusals: see the [table](../../README.md#refusals) |
 
 ## Steps
 

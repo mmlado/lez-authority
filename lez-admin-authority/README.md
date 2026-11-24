@@ -1,14 +1,14 @@
 # lez-admin-authority
 
-[![CI](https://github.com/mmlado/lez-admin-authority/actions/workflows/ci.yml/badge.svg)](https://github.com/mmlado/lez-admin-authority/actions/workflows/ci.yml)
-[![Consumer build](https://github.com/mmlado/lez-admin-authority/actions/workflows/consumer-build.yml/badge.svg)](https://github.com/mmlado/lez-admin-authority/actions/workflows/consumer-build.yml)
-[![Audit](https://github.com/mmlado/lez-admin-authority/actions/workflows/audit.yml/badge.svg)](https://github.com/mmlado/lez-admin-authority/actions/workflows/audit.yml)
-[![Version](https://img.shields.io/github/v/tag/mmlado/lez-admin-authority?include_prereleases&sort=semver&label=version)](https://github.com/mmlado/lez-admin-authority/releases)
-[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](LICENSE-MIT)
-[![Rust](https://img.shields.io/badge/rust-1.98.1-93450a?logo=rust)](rust-toolchain.toml)
+[![CI](https://github.com/mmlado/lez-authority/actions/workflows/ci.yml/badge.svg)](https://github.com/mmlado/lez-authority/actions/workflows/ci.yml)
+[![Consumer build](https://github.com/mmlado/lez-authority/actions/workflows/consumer-build.yml/badge.svg)](https://github.com/mmlado/lez-authority/actions/workflows/consumer-build.yml)
+[![Audit](https://github.com/mmlado/lez-authority/actions/workflows/audit.yml/badge.svg)](https://github.com/mmlado/lez-authority/actions/workflows/audit.yml)
+[![Version](https://img.shields.io/github/v/tag/mmlado/lez-authority?include_prereleases&sort=semver&label=version)](https://github.com/mmlado/lez-authority/releases)
+[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](../LICENSE-MIT)
+[![Rust](https://img.shields.io/badge/rust-1.98.1-93450a?logo=rust)](../rust-toolchain.toml)
 
 
-Single-admin authority for LEZ actor programs (LEZ 0.4): one admin per program, installed by the deployer, handed over by nominate and accept, renounceable, and checked before the handler for every message marked `#[only(Admin)]`, the way `onlyOwner` marks a Solidity function. The program stays a plain LEZ program. A pure Rust library with no SPEL dependency, built on [lez-authority](https://github.com/mmlado/lez-authority), which owns the guard, the routing and the slot. The admin is one role of lez-authority's role sets, so a second role, such as a freeze authority, can join it later without changing it. A SPEL shim (level 3) is planned.
+Single-admin authority for LEZ actor programs (LEZ 0.4): one admin per program, installed by the deployer, handed over by nominate and accept, renounceable, and checked before the handler for every message marked `#[only(Admin)]`, the way `onlyOwner` marks a Solidity function. The program stays a plain LEZ program. A pure Rust library with no SPEL dependency, built on [lez-authority](../README.md), which owns the guard, the routing and the slot. The admin is one role of lez-authority's role sets, so a second role, such as a freeze authority, can join it later without changing it. A SPEL shim (level 3) is planned.
 
 Status: `v0.2.0`. See [Versioning and stability](#versioning-and-stability) for what a release promises. Pinned to logos-execution-zone `v0.4.0-rc3` (2026-11-11) and lez-authority `v0.2.0`. The v0.2.4 line lives in [spel-admin-authority](https://github.com/mmlado/spel-admin-authority) and stays as it is. Coming from it: [docs/migration-from-v0.2.md](docs/migration-from-v0.2.md).
 
@@ -57,7 +57,7 @@ That is [`sample-minimal`](sample-minimal/src/main.rs) without its tests, a comp
 - `Gated` derived on the message enum, and `#[only(Admin)]` on each admin-only message,
 - the `admin` attribute on the handler.
 
-The handler, its signature and the entry point are what they would be without the library. `#[only(Admin)]` is what `#[require_admin]` was in v0.2, and `#[slot(Admin)]` is what `#[admin_slot]` was. The admin's operations, `Init`, `Nominate`, `Accept` and `Renounce`, are not in the program's enum: a client sends them with `admin_op`, and the handler never sees them. The admin defines no operations of its own, so `AdminOp::Own` is refused (E108). Without the macros a program writes what they write, as lez-authority's [`examples/owner_by_hand.rs`](https://github.com/mmlado/lez-authority/blob/main/examples/owner_by_hand.rs) shows for a role named `Owner`.
+The handler, its signature and the entry point are what they would be without the library. `#[only(Admin)]` is what `#[require_admin]` was in v0.2, and `#[slot(Admin)]` is what `#[admin_slot]` was. The admin's operations, `Init`, `Nominate`, `Accept` and `Renounce`, are not in the program's enum: a client sends them with `admin_op`, and the handler never sees them. The admin defines no operations of its own, so `AdminOp::Own` is refused (E108). Without the macros a program writes what they write, as lez-authority's [`examples/owner_by_hand.rs`](../examples/owner_by_hand.rs) shows for a role named `Owner`.
 
 ## How a message travels
 
@@ -76,7 +76,7 @@ account:                                        admin checked,        from == (c
                                                 the handler sends     then the handler
 ```
 
-Identity comes from the engine's `from` at every hop, never from a field in the message. The admin is an account together with the program it acts through: none for a key signing at top level, the owning program for a PDA. Both must match. The hop-by-hop protocol, with every check and its code, is in [lez-authority's routing document](https://github.com/mmlado/lez-authority/blob/main/docs/routing.md).
+Identity comes from the engine's `from` at every hop, never from a field in the message. The admin is an account together with the program it acts through: none for a key signing at top level, the owning program for a PDA. Both must match. The hop-by-hop protocol, with every check and its code, is in [lez-authority's routing document](../docs/routing.md).
 
 ## Layout
 
@@ -87,7 +87,7 @@ Identity comes from the engine's `from` at every hop, never from a field in the 
 | [`sample`](sample/) | The reference program: an open setter, an admin-only setter, and a per-account value the admin sets on another account of the program. |
 | [`sample/core`](sample/core/) | The sample's types without guest code, so the runner and the tests share them. |
 | [`sample/methods`](sample/methods/) | Builds the sample into the program binary the loader deploys, and measures its [overhead](docs/overhead.md). A standalone workspace, needs the risc0 toolchain. |
-| [`sample/runner`](sample/runner/) | Drives the sample on a local dev sequencer through the LEZ wallet library: the reference client. |
+| [`sample/runner`](sample/runner/) | Drives the sample on a local dev sequencer through the LEZ wallet library: the reference client. A standalone workspace with its own lock, since it links the LEZ wallet stack. |
 | [`sample-minimal`](sample-minimal/) | The program above: one file, one account. |
 | [`ci/consumer-fixture`](ci/consumer-fixture/) | A downstream program on the published library, checked in CI and built as a guest weekly. |
 
@@ -180,7 +180,7 @@ fn a_stranger_is_refused() {
 }
 ```
 
-A program that writes the guard call by hand, as lez-authority's [`examples/owner_by_hand.rs`](https://github.com/mmlado/lez-authority/blob/main/examples/owner_by_hand.rs) does, can call `try_guard` with its own handler and get the refusal as a value instead of a panic.
+A program that writes the guard call by hand, as lez-authority's [`examples/owner_by_hand.rs`](../examples/owner_by_hand.rs) does, can call `try_guard` with its own handler and get the refusal as a value instead of a panic.
 
 ## Init gate
 
@@ -204,7 +204,7 @@ A program whose admin writes to accounts other than the config sends to them fro
 
 ## Errors
 
-A refusal is a panic with a stable code: `lez-authority/admin E103: the signing account is not the admin`. The wallet returns the text in `SimulatedRevert` before sending, and a transaction sent anyway is included and reverted, with the text in the sequencer log verbatim. Codes are append-only. The full table, with each refusal's trigger, is in [lez-authority](https://github.com/mmlado/lez-authority#refusals).
+A refusal is a panic with a stable code: `lez-authority/admin E103: the signing account is not the admin`. The wallet returns the text in `SimulatedRevert` before sending, and a transaction sent anyway is included and reverted, with the text in the sequencer log verbatim. Codes are append-only. The full table, with each refusal's trigger, is in [lez-authority](../README.md#refusals).
 
 | Code | Text |
 | --- | --- |
@@ -266,7 +266,7 @@ About 10,000 cycles is the floor of any execution of this guest, the admin check
 - `Init` with the program's own settings. `Init` writes `Config::default()` with the admin installed, and the settings follow as admin-only messages.
 - A client crate or CLI: [issue #1](https://github.com/mmlado/lez-admin-authority/issues/1). The runner is the reference client.
 - The level 3 SPEL shim.
-- A freeze role. It comes as a second role of lez-authority, after the admin, composed through traits ([ADR-0003](https://github.com/mmlado/lez-authority/blob/main/docs/adr/0003-roles-compose-through-traits.md)).
+- A freeze role. It is [lez-freeze-authority](../lez-freeze-authority/README.md), a second role of lez-authority beside the admin, composed through traits ([lez-authority ADR-0003](../docs/adr/0003-roles-compose-through-traits.md)).
 
 ## Documentation
 
@@ -275,40 +275,17 @@ About 10,000 cycles is the floor of any execution of this guest, the admin check
 - [`docs/migration-from-v0.2.md`](docs/migration-from-v0.2.md): from spel-admin-authority to this.
 - [`docs/overhead.md`](docs/overhead.md): cycle counts per hop.
 - [`sample/RUN.md`](sample/RUN.md): the sample on a local dev sequencer.
-- [`CONTEXT.md`](CONTEXT.md): the admin's language, on top of [lez-authority's](https://github.com/mmlado/lez-authority/blob/main/CONTEXT.md).
-- [lez-authority's routing document](https://github.com/mmlado/lez-authority/blob/main/docs/routing.md) and [ADRs](https://github.com/mmlado/lez-authority/tree/main/docs/adr), the plain handler in ADR-0004.
+- [`CONTEXT.md`](CONTEXT.md): the admin's language, on top of [lez-authority's](../CONTEXT.md).
+- [lez-authority's routing document](../docs/routing.md) and [ADRs](../docs/adr/), the plain handler in lez-authority ADR-0004.
 
 ## Development
 
-```bash
-cargo fmt --all --check
-cargo clippy --workspace --exclude sample-runner --all-targets --locked
-cargo test --workspace --exclude sample-runner --locked
-cargo check --locked --manifest-path ci/consumer-fixture/guest/Cargo.toml
-```
-
-The runner links the LEZ wallet stack, which needs `libpcsclite-dev` and is slow, so CI builds it weekly. It needs `r0vm` on its `PATH` when it runs, because the wallet runs each call through it before sending. The guest and the overhead numbers need the risc0 toolchain:
-
-```bash
-cargo build --release --manifest-path sample/methods/Cargo.toml
-RISC0_DEV_MODE=1 cargo test --manifest-path sample/methods/Cargo.toml --test overhead -- --nocapture
-```
+See the repository's [Development](../README.md#development) section.
 
 ## Versioning and stability
 
-Semantic versioning covers the public Rust API and the on-chain wire formats: the Borsh encoding of `AuthoritySlot` inside your config, and of the library's messages, `AdminOp` and `Forwarded` behind the byte 255. Your enum's encoding is yours. The refusal codes and their meaning are covered too. While the version is 0.x, a minor bump may change any of them, and each such change is called out in the [changelog](CHANGELOG.md).
-
-The `lee_core` dependency pins logos-execution-zone at its `v0.4.0-rc3` tag, and lez-authority at its `v0.2.0` tag. Every re-pin is a minor release.
+lez-admin-authority shares the repository's version and tags, see [Versioning and stability](../README.md#versioning-and-stability).
 
 ## License
 
-Dual-licensed under [MIT](LICENSE-MIT) and [Apache 2.0](LICENSE-APACHE2) at the consumer's option.
-
-## Developing against a local lez-authority
-
-The workspace pins `lez-authority` to its tag on GitHub. To build against the sibling checkout instead, add an untracked `.cargo/config.toml`:
-
-```toml
-[patch."https://github.com/mmlado/lez-authority"]
-lez-authority = { path = "../lez-authority" }
-```
+See the repository's [License](../README.md#license).

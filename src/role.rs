@@ -49,8 +49,8 @@ where
     /// the program is frozen. The guard asks [`Policy::may_run`] only of a role that sets it, so a
     /// consent a role does not declare here is never asked: at the config, and for a program message
     /// handled at another actor of the program, through a request for clearance to the config. A
-    /// guard takes one such role at most, since a request for clearance names no role (ADR-0005),
-    /// and two do not compile.
+    /// guard takes one such role at most, since a request for clearance names no role
+    /// (lez-authority ADR-0005), and two do not compile.
     const REFUSES_MESSAGES: bool = false;
 
     /// Whether the role looks at the state of each actor the handler runs at, through

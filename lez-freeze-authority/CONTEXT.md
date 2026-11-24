@@ -1,6 +1,6 @@
 # lez-freeze-authority
 
-A freeze authority for LEZ actor programs: one account that can freeze the whole program, or single accounts, and release them. It is a role of [lez-authority](https://github.com/mmlado/lez-authority) that answers to the admin of [lez-admin-authority](https://github.com/mmlado/lez-admin-authority), whose glossaries apply here.
+A freeze authority for LEZ actor programs: one account that can freeze the whole program, or single accounts, and release them. It is a role of [lez-authority](../CONTEXT.md) that answers to the admin of [lez-admin-authority](../lez-admin-authority/CONTEXT.md), whose glossaries apply here.
 
 ## Language
 

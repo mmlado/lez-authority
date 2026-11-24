@@ -1,6 +1,6 @@
 # lez-admin-authority
 
-A single admin per LEZ actor program: installed through the program's own message enum, handed over by nominate and accept, renounceable, and checked wherever the program's handler asks. The admin is a role of [lez-authority](https://github.com/mmlado/lez-authority), whose glossary applies here.
+A single admin per LEZ actor program: installed through the program's own message enum, handed over by nominate and accept, renounceable, and checked wherever the program's handler asks. The admin is a role of [lez-authority](../CONTEXT.md), whose glossary applies here.
 
 ## Language
 
@@ -25,5 +25,5 @@ The admin empties the slot for good. No admin can be installed afterwards.
 _Avoid_: revoke, burn, reset
 
 **Sample**:
-The reference program in this repo: two values, one open setter, one admin-only setter. It is the integrator's view of the library and the first thing every change must keep working.
+The reference program in this folder: two values, one open setter, one admin-only setter. It is the integrator's view of the library and the first thing every change must keep working.
 _Avoid_: demo, example

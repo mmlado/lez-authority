@@ -1,6 +1,6 @@
 # Authority lifecycle
 
-How the admin slot moves between states over a program's lifetime, what each transition checks, and which guarantees the library gives. The hop-by-hop routing, with every code, is in [lez-authority's routing document](https://github.com/mmlado/lez-authority/blob/main/docs/routing.md).
+How the admin slot moves between states over a program's lifetime, what each transition checks, and which guarantees the library gives. The hop-by-hop routing, with every code, is in [lez-authority's routing document](../../docs/routing.md).
 
 ## State machine
 
@@ -123,7 +123,7 @@ The two empty-looking states are refused differently on purpose: E101 means "not
 
 The runtime sets `is_authorized` at an actor when the actor's account authorized the transaction: a key by signing it, a PDA by a grant from the program that derives it, carried on a sync message. That bit is visible only at the account's own actor, so the admin's message goes to the admin's seat first. The seat forwards to the config naming the program that reached it, or none at top level. The config takes the caller's account from the engine's `from`, never from the message, and accepts the forward only from an actor of its own program, which runs the same guard.
 
-The admin is matched on both the account and the `via`. A key admin acts at top level only: a program that carries the admin's signature and reaches the admin's seat is refused (E120). A PDA admin acts through the program it accepted through, and only through it. See [ADR-0001](https://github.com/mmlado/lez-authority/blob/main/docs/adr/0001-per-holder-via.md).
+The admin is matched on both the account and the `via`. A key admin acts at top level only: a program that carries the admin's signature and reaches the admin's seat is refused (E120). A PDA admin acts through the program it accepted through, and only through it. See [lez-authority ADR-0001](../../docs/adr/0001-per-holder-via.md).
 
 ## Program-as-admin
 

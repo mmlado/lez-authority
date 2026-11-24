@@ -1,16 +1,25 @@
 # lez-authority
 
 [![CI](https://github.com/mmlado/lez-authority/actions/workflows/ci.yml/badge.svg)](https://github.com/mmlado/lez-authority/actions/workflows/ci.yml)
+[![Consumer build](https://github.com/mmlado/lez-authority/actions/workflows/consumer-build.yml/badge.svg)](https://github.com/mmlado/lez-authority/actions/workflows/consumer-build.yml)
 [![Audit](https://github.com/mmlado/lez-authority/actions/workflows/audit.yml/badge.svg)](https://github.com/mmlado/lez-authority/actions/workflows/audit.yml)
 [![Version](https://img.shields.io/github/v/tag/mmlado/lez-authority?include_prereleases&sort=semver&label=version)](https://github.com/mmlado/lez-authority/releases)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](LICENSE-MIT)
 [![Rust](https://img.shields.io/badge/rust-1.98.1-93450a?logo=rust)](rust-toolchain.toml)
 
-Authority primitives for LEZ actor programs (LEZ 0.4): a slot per role inside a program's config, the hop that carries a sender's authority from their own actor to the config, and the guard that runs in front of the program's own handler. Policy-free: no notion of admin or freeze lives here. No SPEL dependency.
+This repository holds three crates, released together at one version:
 
-Status: `v0.2.0`. See [Versioning and stability](#versioning-and-stability) for what a release promises. Pinned to logos-execution-zone `v0.4.0-rc3` (2026-11-11), the actor model of PR #935. The v0.2.4 line lives in [spel-authority](https://github.com/mmlado/spel-authority) and stays as it is. First consumer: [lez-admin-authority](https://github.com/mmlado/lez-admin-authority), which names the admin role.
+| Crate | What a program depends on it for |
+| --- | --- |
+| [`lez-authority`](#lez-authority) | Roles of its own, on the engine below: the slot, the hop to the config and the guard |
+| [`lez-admin-authority`](lez-admin-authority/README.md) | An admin, installed by the deployer, handed over by nominate and accept, renounceable |
+| [`lez-freeze-authority`](lez-freeze-authority/README.md) | A freeze authority beside the admin, which freezes the whole program or single accounts and releases them |
 
-See [CONTEXT.md](CONTEXT.md) for the glossary, [docs/routing.md](docs/routing.md) for every hop with its checks, and [docs/adr](docs/adr) for the design decisions.
+The engine, lez-authority, holds the authority primitives for LEZ actor programs (LEZ 0.4): a slot per role inside a program's config, the hop that carries a sender's authority from their own actor to the config, and the guard that runs in front of the program's own handler. Policy-free: no notion of admin or freeze lives here. No SPEL dependency.
+
+Status: `v0.2.0`. See [Versioning and stability](#versioning-and-stability) for what a release promises. Pinned to logos-execution-zone `v0.4.0-rc3` (2026-11-11), the actor model of PR #935. The v0.2.4 line lives in [spel-authority](https://github.com/mmlado/spel-authority) and stays as it is.
+
+See [CONTEXT.md](CONTEXT.md) for the glossary, [CONTEXT-MAP.md](CONTEXT-MAP.md) for the admin's and the freeze's beside it, [docs/routing.md](docs/routing.md) for every hop with its checks, and [docs/adr](docs/adr) for the design decisions.
 
 ## The problem
 
@@ -32,7 +41,7 @@ client ──────► is_authorized?     hop       from an actor of P?   
 
 Two hops for a message that needs a holder. One for any other message, which runs where it is sent, and two when a role refuses program messages, since it then asks the config for clearance. Three when the handler at the config sends on to another actor of the program, and four with that request. Identity comes from the engine's `from` at every hop, never from a field in the message.
 
-A holder is an account together with the program it acts through, its `via`: none for a key that signs at top level, the owning program for a PDA. The guard accepts a caller only when both match ([ADR-0001](docs/adr/0001-per-holder-via.md)).
+A holder is an account together with the program it acts through, its `via`: none for a key that signs at top level, the owning program for a PDA. The guard accepts a caller only when both match ([lez-authority ADR-0001](docs/adr/0001-per-holder-via.md)).
 
 ## Adding as a dependency
 
@@ -43,11 +52,11 @@ lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone", t
 lez-authority = { git = "https://github.com/mmlado/lez-authority", tag = "v0.2.0" }
 ```
 
-A program that only needs an admin depends on [lez-admin-authority](https://github.com/mmlado/lez-admin-authority) instead, which brings this crate in. The `lee_core` source must match the one this crate pins, see [Versioning and stability](#versioning-and-stability).
+A program that needs an admin depends on [lez-admin-authority](lez-admin-authority/README.md) instead, and one that also needs a freeze authority on [lez-freeze-authority](lez-freeze-authority/README.md). Both bring this crate in. The `lee_core` source must match the one this crate pins, see [Versioning and stability](#versioning-and-stability).
 
 ## What a program writes
 
-The program stays a plain LEZ program: its own message enum, its own state, and a handler `fn(&ReceiveInput, Message) -> Response` under `lee_core::actor_entrypoint!`. It adds a slot to its config, marks the messages that need a holder, and puts the `guard` attribute on the handler ([ADR-0004](docs/adr/0004-the-guard-in-front-of-a-plain-handler.md)). A downstream crate names the role and its rules, as lez-admin-authority does for `Admin`. The whole of [`examples/owner.rs`](examples/owner.rs):
+The program stays a plain LEZ program: its own message enum, its own state, and a handler `fn(&ReceiveInput, Message) -> Response` under `lee_core::actor_entrypoint!`. It adds a slot to its config, marks the messages that need a holder, and puts the `guard` attribute on the handler ([lez-authority ADR-0004](docs/adr/0004-the-guard-in-front-of-a-plain-handler.md)). A downstream crate names the role and its rules, as lez-admin-authority does for `Admin`. The whole of [`examples/owner.rs`](examples/owner.rs):
 
 ```rust
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -108,7 +117,7 @@ The attribute turns the handler into an inner function and puts `lez_authority::
 
 At the config every program message needs an initialized config and the consent of the role that refuses program messages, unless it is exempt from it, and the guard refuses a handler whose write changed a slot. The handler of a message that came through a seat sees `input.from` as the sender's own actor and `input.message` as the hop. Wherever the handler runs, the guard refuses a response that sends the config a library message, which the config would take for a hop from that actor, and one that sends a role's own message to an actor of the program (E140). Each role that watches state also looks at the actor's state before the handler and at its write after it. A client builds a role's operation with `Wire::op::<R>(op)`.
 
-Away from the config, a program message handled there asks the config for clearance when a role refuses program messages and the message is not exempt from it, whoever sent it, the config included. The guard adds the request to the handler's response, and the config answers it under that role's rules in the same transaction, so a refusal reverts the whole transaction, the handler's effects with it. A client lists the config actor in such a transaction ([ADR-0005](docs/adr/0005-a-message-handled-elsewhere-asks-the-config-for-clearance.md)). A request from a private actor runs at the config as a public segment and adds its crossing to the transaction.
+Away from the config, a program message handled there asks the config for clearance when a role refuses program messages and the message is not exempt from it, whoever sent it, the config included. The guard adds the request to the handler's response, and the config answers it under that role's rules in the same transaction, so a refusal reverts the whole transaction, the handler's effects with it. A client lists the config actor in such a transaction ([lez-authority ADR-0005](docs/adr/0005-a-message-handled-elsewhere-asks-the-config-for-clearance.md)). A request from a private actor runs at the config as a public segment and adds its crossing to the transaction.
 
 ## Roles
 
@@ -124,7 +133,7 @@ A role's own message, built with `Ctx::own_message::<R>(key, bytes)`, carries by
 
 A role may also watch the state of every actor the handler runs at, as a freeze authority keeps the program off the actor that marks a frozen account. It says so with `Policy::WATCHES_STATE`. The guard then asks its `Policy::may_handle` with the actor's state just before the handler, at every actor of the program, the config included. After the handler it asks its `Policy::may_write` with the state before and the state written, or `None` when the handler kept the state. A refusal in either refuses the message. So the role refuses before a handler that cannot read its state fails on it. Neither look is told which actor it runs at, so a role refuses by the state it recognizes, and an actor that holds none of the role's state runs any handler. Both looks cover exempt messages too. A message that runs no handler, such as a management operation, is never looked at. A program whose roles leave the switch unset pays nothing for the looks.
 
-A program names its roles in the attribute: `roles(A)` for one, `roles(A, B)` for two. The first is the root. Its `Init` creates the config, and the guard's own refusals name it. A second role that answers to the first overrides the rules that differ and reads the first role's slot through the config, the way a freeze authority answers to the admin. A message may need either role's holder, or both ([ADR-0003](docs/adr/0003-roles-compose-through-traits.md)).
+A program names its roles in the attribute: `roles(A)` for one, `roles(A, B)` for two. The first is the root. Its `Init` creates the config, and the guard's own refusals name it. A second role that answers to the first overrides the rules that differ and reads the first role's slot through the config, the way a freeze authority answers to the admin. A message may need either role's holder, or both ([lez-authority ADR-0003](docs/adr/0003-roles-compose-through-traits.md)).
 
 A role crate, one that defines roles for programs to use, is named `lez-<role>-authority` and re-exports this crate at its root as `lez_authority`: with `pub use lez_authority;`, or through the role crate it builds on, as lez-freeze-authority does with `pub use lez_admin_authority::lez_authority;`. The macros find this crate through it, so a program may depend on the role crate alone.
 
@@ -243,20 +252,41 @@ A PDA holder's grant comes with the call, so the handler, and every program it c
 
 ## Versioning and stability
 
-Semantic versioning covers the public Rust API, the Borsh encodings of `AuthoritySlot`, `Holder`, `Op` (whose `Own` bytes carry no length and run to the end of the message), `Forwarded` and `LibraryMessage` (whose `Own` bytes also run to the end), the seed `own_actor` hashes, the byte 255 that marks a library message, the refusal codes with their meaning, and the naming rule by which the macros find this crate through a role crate. Items hidden from the docs are not covered, since they serve the guard and its macros and change with them. The slot lives inside the program's own config, and the library messages travel next to the program's. While the version is 0.x, a minor bump may change any of them, and each such change is called out in the [changelog](CHANGELOG.md).
+The three crates share one version and one tag, so a release of one is a release of all three, and a program names the same tag for each of them it depends on ([lez-authority ADR-0007](docs/adr/0007-one-repository-at-one-version.md)).
+
+Semantic versioning covers the public Rust API, the Borsh encodings of `AuthoritySlot`, `Holder`, `Op` (whose `Own` bytes carry no length and run to the end of the message), `Forwarded` and `LibraryMessage` (whose `Own` bytes also run to the end), the seed `own_actor` hashes, the byte 255 that marks a library message, the refusal codes with their meaning, and the naming rule by which the macros find this crate through a role crate. Items hidden from the docs are not covered, since they serve the guard and its macros and change with them. The slot lives inside the program's own config, and the library messages travel next to the program's. For lez-admin-authority it also covers the Borsh encoding of `AdminOp` behind the byte 255. A program's own enum's encoding is the program's. While the version is 0.x, a minor bump may change any of them, and each such change is called out in the [changelog](CHANGELOG.md).
 
 The `lee_core` dependency pins logos-execution-zone at its `v0.4.0-rc3` tag. A consumer must pin the same tag, spelt the same way: cargo treats a tag and a rev as different sources even when they point at the same commit, and two copies of `lee_core` do not compile. Every re-pin is a minor release.
 
 ## Development
 
+The workspace holds the three crates, the engine's test fixtures, and each sample's program, types and smallest program. Its tests run on the host, on the same code the guests run:
+
 ```bash
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --locked
 cargo test --workspace --locked
+cargo check --locked --manifest-path lez-admin-authority/ci/consumer-fixture/guest/Cargo.toml
 ```
 
-Host tests only: the engine runs the same code the guest does, and the admin repo builds the guest and runs it on a local dev sequencer.
+Each sample's runner is a workspace of its own, since it links the LEZ wallet stack, which needs `libpcsclite-dev` and is slow. A runner needs `r0vm` on its `PATH` when it runs, because the wallet runs each call through it before sending:
+
+```bash
+cargo build --release --locked --manifest-path lez-admin-authority/sample/runner/Cargo.toml
+cargo build --release --locked --manifest-path lez-freeze-authority/sample/runner/Cargo.toml
+```
+
+The guests and the overhead numbers need the risc0 toolchain, installed through `rzup`:
+
+```bash
+cargo build --release --locked --manifest-path lez-admin-authority/sample/methods/Cargo.toml
+cargo build --release --locked --manifest-path lez-freeze-authority/sample/methods/Cargo.toml
+RISC0_DEV_MODE=1 cargo test --locked --manifest-path lez-admin-authority/sample/methods/Cargo.toml --test overhead -- --nocapture
+RISC0_DEV_MODE=1 cargo test --locked --manifest-path lez-freeze-authority/sample/methods/Cargo.toml --test overhead -- --nocapture
+```
+
+CI runs the first block on pull requests and on main, and builds the runners and the guests weekly. Each sample's `sample/RUN.md` runs it on a local dev sequencer.
 
 ## License
 
-Dual-licensed under [MIT](LICENSE-MIT) and [Apache 2.0](LICENSE-APACHE2) at the consumer's option.
+All three crates are dual-licensed under [MIT](LICENSE-MIT) and [Apache 2.0](LICENSE-APACHE2) at the consumer's option.

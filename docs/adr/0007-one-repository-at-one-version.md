@@ -1,0 +1,10 @@
+# The engine and its roles share one repository and one version
+
+lez-admin-authority depends on lez-authority, and lez-freeze-authority on lez-admin-authority. Cargo identifies a git dependency by its ref string, so a program whose dependencies name two tags of one crate holds two copies of it, and they do not compile together. With a repository per crate, each pinning the one below by tag, every engine change took an engine release, an admin release that pinned it and a freeze release that pinned that admin, with a local patch to work across them in between. So the three crates are members of one workspace in lez-authority's repository: the engine at the root, the admin in `lez-admin-authority/` and the freeze in `lez-freeze-authority/`. The admin depends on the engine and the freeze on the admin by path, and the three share one version and one tag, so a program that names a tag of this repository gets one copy of each. Each role came in with its history, every commit with its hash and signature, and a pull request merges with a merge commit only, since a squash or a rebase would rewrite those commits and drop their signatures. Each role keeps its folder with its README, its sample and its CI jobs, so each RFP deliverable keeps a place of its own. The sample runners are workspaces of their own, so the LEZ wallet stack and its advisories stay out of the workspace's lock.
+
+## Considered options
+
+- **A repository per crate, each pinning the one below by tag,** as up to 0.2.0. Each RFP deliverable would have a repository of its own with its README, sample and CI, at the price of three releases for every engine change.
+- **One repository with a tag per crate.** Each crate would keep a version of its own, but a program that names two tags of one repository gets two copies of the crates below them, since Cargo keys a git dependency by its ref string.
+- **A new repository for the three.** The engine's URL would move as well as the roles'.
+- **lez-admin-authority's repository for the three.** The freeze of RFP-002 and the engine would live under the admin's name.

@@ -5,7 +5,7 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+From 0.3.0 on, lez-admin-authority's changes are in the repository's [changelog](../CHANGELOG.md), since it is released with lez-authority at one version.
 
 ## [0.2.0] - 2026-11-11
 
@@ -53,7 +53,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The overhead harness, `sample/methods/tests/overhead.rs`, and the cycle counts per hop in `docs/overhead.md`.
 - The README with the integration steps, the transaction shapes and the error table, `docs/authority-lifecycle.md`, `docs/requirement-test-matrix.md` and `docs/migration-from-v0.2.md`.
 
-[Unreleased]: https://github.com/mmlado/lez-admin-authority/compare/v0.2.0...HEAD
 [0.2.0]: https://github.com/mmlado/lez-admin-authority/releases/tag/v0.2.0
 [0.1.0]: https://github.com/mmlado/lez-admin-authority/releases/tag/v0.1.0
 [0.1.0-alpha.1]: https://github.com/mmlado/lez-admin-authority/releases/tag/v0.1.0-alpha.1
