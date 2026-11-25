@@ -22,64 +22,38 @@ where
             }
             R::may_install(ctx, config)?;
             let caller = *ctx.vouched::<R>()?;
-            let slot = HasSlot::<R>::slot_mut(config).authority_slot_mut();
-            let nominee = match slot {
-                AuthoritySlot::Unset => None,
-                AuthoritySlot::Offered { nominee } => Some(*nominee),
-                AuthoritySlot::Held { .. } => return Err(refuse(AuthorityError::AlreadyInstalled)),
-                AuthoritySlot::Renounced => return Err(refuse(AuthorityError::Renounced)),
-            };
-            *slot = AuthoritySlot::Held {
-                holder: Holder {
+            HasSlot::<R>::slot_mut(config)
+                .authority_slot_mut()
+                .install(Holder {
                     account: caller.account,
                     via: caller.via,
-                },
-                nominee,
-            };
+                })
+                .map_err(refuse)?;
         }
         Op::Nominate { next } => {
             R::may_nominate(ctx, config)?;
             let offer = (next != AccountId::default()).then_some(next);
-            let slot = HasSlot::<R>::slot_mut(config).authority_slot_mut();
-            match slot {
-                AuthoritySlot::Held { nominee, .. } => *nominee = offer,
-                AuthoritySlot::Unset | AuthoritySlot::Offered { .. } => {
-                    *slot = offer.map_or(AuthoritySlot::Unset, |nominee| AuthoritySlot::Offered {
-                        nominee,
-                    });
-                }
-                AuthoritySlot::Renounced => return Err(refuse(AuthorityError::Renounced)),
-            }
+            HasSlot::<R>::slot_mut(config)
+                .authority_slot_mut()
+                .nominate(offer)
+                .map_err(refuse)?;
         }
         Op::Accept { pda_seed } => {
             let caller = *ctx.vouched::<R>()?;
-            let slot = HasSlot::<R>::slot_mut(config).authority_slot_mut();
-            let pending = match slot {
-                AuthoritySlot::Unset => None,
-                AuthoritySlot::Renounced => return Err(refuse(AuthorityError::Renounced)),
-                AuthoritySlot::Held { nominee, .. } => *nominee,
-                AuthoritySlot::Offered { nominee } => Some(*nominee),
-            };
-            let Some(nominee) = pending else {
-                return Err(refuse(AuthorityError::NoNomination));
-            };
-            if nominee != caller.account {
-                return Err(refuse(AuthorityError::NotNominee));
-            }
-            match (caller.via, pda_seed) {
-                (None, None) => {}
-                (Some(program), Some(seed))
-                    if AccountId::for_public_pda(&program, &seed) == caller.account => {}
-                _ => return Err(refuse(AuthorityError::SeedProofFailed)),
-            }
-            *slot = AuthoritySlot::held(Holder {
+            let by = Holder {
                 account: caller.account,
                 via: caller.via,
-            });
+            };
+            HasSlot::<R>::slot_mut(config)
+                .authority_slot_mut()
+                .accept(by, pda_seed)
+                .map_err(refuse)?;
         }
         Op::Renounce => {
             R::may_renounce(ctx, config)?;
-            *HasSlot::<R>::slot_mut(config).authority_slot_mut() = R::renounced();
+            HasSlot::<R>::slot_mut(config)
+                .authority_slot_mut()
+                .renounce(R::renounced());
         }
         Op::Own(op) => {
             let holder = HasSlot::<R>::slot(config).authority_slot().clone();

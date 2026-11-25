@@ -49,6 +49,22 @@ fn the_first_role_installs_and_nominates_for_the_second() {
 }
 
 #[test]
+fn a_role_s_policy_refuses_before_its_slot_does() {
+    let renounced = Two {
+        second: AuthoritySlot::Renounced,
+        ..two(None)
+    };
+    for op in [Op::Init, Op::Nominate { next: OTHER }] {
+        let name = format!("{op:?}");
+        assert_eq!(
+            send(KEY, Some(&renounced), Wire::op::<Second>(op)),
+            Err(Refusal::of::<First>(AuthorityError::NotHolder)),
+            "{name}"
+        );
+    }
+}
+
+#[test]
 fn a_gated_message_takes_the_holder_of_its_role() {
     let config = send(KEY, Some(&two(Some(KEY))), Msg::GatedValue(5).into()).unwrap();
     assert_eq!(config.value, 5);

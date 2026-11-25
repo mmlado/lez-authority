@@ -37,18 +37,19 @@ extern crate self as lez_authority;
 /// handler. See [`lez_authority_macros`].
 pub use lez_authority_macros::{Gated, HasSlot, guard};
 
-mod error;
 mod role;
 mod roles;
 mod routing;
 mod slot;
 mod wire;
 
-pub use error::{AuthorityError, Refusal};
-pub use role::{Ctx, HasSlot, InitGate, Policy, Role};
+pub use lez_authority_core::{
+    AuthorityError, AuthoritySlot, HasSlot, Holder, InitGate, Refusal, Role, Slot,
+};
+pub use role::{Ctx, Policy};
 pub use roles::Roles;
 pub use routing::{config_account, guard, own_actor, seed, try_guard};
-pub use slot::{AuthoritySlot, Caller, Holder, Slot};
+pub use slot::Caller;
 pub use wire::{Clearance, Forwarded, Gated, LIBRARY_TAG, LibraryMessage, Op, Wire};
 
 #[cfg(doctest)]

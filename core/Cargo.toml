@@ -1,0 +1,11 @@
+[package]
+name = "lez-authority-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The policy-free base of lez-authority: a role and its slot, the holder's operations on it, and the refusal codes"
+repository.workspace = true
+
+[dependencies]
+borsh.workspace = true
+lee_core.workspace = true

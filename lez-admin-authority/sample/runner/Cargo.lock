@@ -3763,8 +3763,17 @@ version = "0.2.0"
 dependencies = [
  "borsh",
  "lee_core",
+ "lez-authority-core",
  "lez-authority-macros",
  "risc0-zkvm",
+]
+
+[[package]]
+name = "lez-authority-core"
+version = "0.2.0"
+dependencies = [
+ "borsh",
+ "lee_core",
 ]
 
 [[package]]

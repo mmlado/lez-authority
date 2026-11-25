@@ -675,6 +675,7 @@ mod tests {
         }
         for name in [
             "lez-authority",
+            "lez-authority-core",
             "lez--authority",
             "lez-admin",
             "admin-authority",

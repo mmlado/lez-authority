@@ -52,114 +52,6 @@ fn run(
 }
 
 #[test]
-fn codes_are_stable() {
-    let expected: [(AuthorityError, u16); 26] = [
-        (AuthorityError::NotInitialized, 101),
-        (AuthorityError::Renounced, 102),
-        (AuthorityError::NotHolder, 103),
-        (AuthorityError::MissingSignature, 104),
-        (AuthorityError::SeedProofFailed, 107),
-        (AuthorityError::MessageDoesNotDecode, 108),
-        (AuthorityError::ConfigDoesNotDecode, 109),
-        (AuthorityError::NoNomination, 113),
-        (AuthorityError::NotNominee, 114),
-        (AuthorityError::NotGenesis, 115),
-        (AuthorityError::NotDeployer, 117),
-        (AuthorityError::AlreadyInstalled, 118),
-        (AuthorityError::NotOwnProgram, 119),
-        (AuthorityError::ViaNotAllowed, 120),
-        (AuthorityError::ForwardedNotAtConfig, 121),
-        (AuthorityError::NotThroughSeat, 122),
-        (AuthorityError::NotFromConfig, 123),
-        (AuthorityError::SlotChanged, 126),
-        (AuthorityError::NotInstalled, 131),
-        (AuthorityError::LibrarySend, 135),
-        (AuthorityError::ClearanceFromOutside, 136),
-        (AuthorityError::ByNominationOnly, 137),
-        (AuthorityError::ClearanceNotAtConfig, 138),
-        (AuthorityError::RoleSendsInProgram, 139),
-        (AuthorityError::HandlerSendsOwnMessage, 140),
-        (AuthorityError::NotOwnActor, 141),
-    ];
-    for (error, code) in &expected {
-        assert_eq!(error.code(), *code, "{error:?}");
-        assert!(
-            AuthorityError::ALL.contains(error),
-            "{error:?} is missing from ALL"
-        );
-        listed_in_all(error);
-    }
-    for error in &AuthorityError::ALL {
-        assert!(
-            expected.iter().any(|(listed, _)| listed == error),
-            "{error:?} is missing from the table"
-        );
-    }
-    let mut codes: Vec<u16> = AuthorityError::ALL
-        .iter()
-        .map(AuthorityError::code)
-        .collect();
-    codes.sort_unstable();
-    codes.dedup();
-    assert_eq!(
-        codes.len(),
-        AuthorityError::ALL.len(),
-        "two refusals share a code"
-    );
-    assert_eq!(
-        AuthorityError::NotHolder.text("admin", "admin"),
-        "lez-authority/admin E103: the signing account is not the admin"
-    );
-    assert_eq!(
-        Refusal::of::<Hold>(AuthorityError::NotDeployer).text(),
-        "lez-authority/holder E117: only the deployer installs the first holder: the program's own account, through its seat at top level"
-    );
-}
-
-#[test]
-fn a_key_holder_acts_at_top_level_only() {
-    let slot = held(KEY);
-    assert_eq!(slot.check(&caller(KEY, None)), Ok(()));
-    assert_eq!(
-        slot.check(&caller(KEY, Some(GOVERNANCE))),
-        Err(AuthorityError::ViaNotAllowed)
-    );
-    assert_eq!(
-        slot.check(&caller(OTHER, None)),
-        Err(AuthorityError::NotHolder)
-    );
-}
-
-#[test]
-fn a_pda_holder_acts_through_its_program_only() {
-    let slot = AuthoritySlot::held(Holder {
-        account: KEY,
-        via: Some(GOVERNANCE),
-    });
-    assert_eq!(slot.check(&caller(KEY, Some(GOVERNANCE))), Ok(()));
-    assert_eq!(
-        slot.check(&caller(KEY, None)),
-        Err(AuthorityError::ViaNotAllowed)
-    );
-    assert_eq!(
-        slot.check(&caller(KEY, Some(OTHER))),
-        Err(AuthorityError::ViaNotAllowed)
-    );
-}
-
-#[test]
-fn unset_and_renounced_slots_refuse_everyone() {
-    assert_eq!(
-        AuthoritySlot::Unset.check(&caller(KEY, None)),
-        Err(AuthorityError::NotInstalled)
-    );
-    assert_eq!(
-        AuthoritySlot::Renounced.check(&caller(KEY, None)),
-        Err(AuthorityError::Renounced)
-    );
-}
-
-#[test]
 fn the_deployer_installs_itself_and_the_slot_must_stay_that_way() {
     assert_eq!(
         run(Some(caller(PROGRAM, None)), AuthoritySlot::Unset, Op::Init),
@@ -371,17 +263,6 @@ fn the_default_policy_makes_no_offer_on_a_slot_with_no_holder() {
 }
 
 #[test]
-fn a_slot_with_an_offer_has_a_nominee_and_no_holder() {
-    let offered = AuthoritySlot::Offered { nominee: KEY };
-    assert_eq!(offered.holder(), None);
-    assert_eq!(offered.nominee(), Some(KEY));
-    assert_eq!(
-        offered.check(&caller(KEY, None)),
-        Err(AuthorityError::NotInstalled)
-    );
-}
-
-#[test]
 fn install_keeps_a_standing_offer() {
     assert_eq!(
         run(
@@ -396,21 +277,6 @@ fn install_keeps_a_standing_offer() {
             },
             nominee: Some(KEY),
         })
-    );
-}
-
-#[test]
-fn the_slot_s_existing_encodings_keep_their_bytes() {
-    let key = borsh::to_vec(&KEY).unwrap();
-    assert_eq!(borsh::to_vec(&AuthoritySlot::Unset).unwrap(), [0]);
-    assert_eq!(
-        borsh::to_vec(&held(KEY)).unwrap(),
-        [&[1][..], &key, &[0, 0]].concat()
-    );
-    assert_eq!(borsh::to_vec(&AuthoritySlot::Renounced).unwrap(), [2]);
-    assert_eq!(
-        borsh::to_vec(&AuthoritySlot::Offered { nominee: KEY }).unwrap(),
-        [&[3][..], &key].concat()
     );
 }
 
@@ -437,38 +303,4 @@ fn the_wire_keeps_the_program_s_encoding_and_marks_the_library_s() {
         borsh::from_slice::<Wire<u16>>(&borsh::to_vec(&7u16).unwrap()).unwrap(),
         program
     );
-}
-
-/// Every engine refusal, so a new one does not compile until someone lists it, beside the table
-/// and `ALL`.
-fn listed_in_all(error: &AuthorityError) {
-    match error {
-        AuthorityError::NotInitialized
-        | AuthorityError::ConfigDoesNotDecode
-        | AuthorityError::MessageDoesNotDecode
-        | AuthorityError::MissingSignature
-        | AuthorityError::NotOwnProgram
-        | AuthorityError::ForwardedNotAtConfig
-        | AuthorityError::NotThroughSeat
-        | AuthorityError::NotInstalled
-        | AuthorityError::AlreadyInstalled
-        | AuthorityError::NotDeployer
-        | AuthorityError::NotGenesis
-        | AuthorityError::NoNomination
-        | AuthorityError::NotNominee
-        | AuthorityError::SeedProofFailed
-        | AuthorityError::Renounced
-        | AuthorityError::NotHolder
-        | AuthorityError::ViaNotAllowed
-        | AuthorityError::SlotChanged
-        | AuthorityError::NotFromConfig
-        | AuthorityError::LibrarySend
-        | AuthorityError::ClearanceFromOutside
-        | AuthorityError::ByNominationOnly
-        | AuthorityError::ClearanceNotAtConfig
-        | AuthorityError::RoleSendsInProgram
-        | AuthorityError::HandlerSendsOwnMessage
-        | AuthorityError::NotOwnActor => {}
-        AuthorityError::Role { .. } => panic!("a role crate's refusal is not the engine's"),
-    }
 }
