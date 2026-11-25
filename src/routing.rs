@@ -66,7 +66,7 @@ pub const fn seed(label: &[u8]) -> PdaSeed {
 /// - A library operation goes to the config through the sender's seat, and the guard runs it
 ///   there under the role's policy. The root role's `Init` creates the config.
 /// - A message that needs a holder goes the same way. At the config the guard checks the
-///   holder, asks [`Policy::may_run`] of the role that refuses program messages, unless the
+///   holder, asks [`Hooks::may_run`] of the role that refuses program messages, unless the
 ///   message is exempt from it, runs the handler, and refuses a result that changed a slot.
 /// - A message only the config sends runs only when it came from the config account.
 /// - A program message handled at an actor other than the config, when a role refuses program
@@ -74,20 +74,20 @@ pub const fn seed(label: &[u8]) -> PdaSeed {
 ///   adds the request to the handler's response, and the config answers it under that role's
 ///   rules in the same transaction.
 /// - A role's own message, which only the config sends, runs only at the role's own actor for
-///   its key, [`own_actor`], under that role's [`Policy::receive`], over that actor's state, and
+///   its key, [`own_actor`], under that role's [`Hooks::receive`], over that actor's state, and
 ///   never reaches the handler.
 /// - Anything else runs where it was sent, as in a program without the guard. At the config
 ///   that needs an initialized config and the consent of the role that refuses program
 ///   messages, unless the message is exempt from it, and the slots are checked afterwards.
 ///
 /// Wherever the handler runs, the guard first asks each role that sets
-/// [`Policy::WATCHES_STATE`] whether the handler may run over the actor's state, through
-/// [`Policy::may_handle`]. At the config that comes after the holders and the consent. After the
+/// [`Hooks::WATCHES_STATE`] whether the handler may run over the actor's state, through
+/// [`Hooks::may_handle`]. At the config that comes after the holders and the consent. After the
 /// handler the guard refuses a response that sends the config a library message, which the
 /// config would take for a hop from that actor. It also refuses one that sends a role's own
 /// message to an actor of the program (E140), since a handler at the config that sent one would
 /// pose as the role at the actor it reaches. Then it asks the same roles whether the handler's
-/// write may stand, through [`Policy::may_write`].
+/// write may stand, through [`Hooks::may_write`].
 ///
 /// The refusing role's consent, and a role's own operation, may come with sync messages, which
 /// the config sends in the same transaction: the consent's ahead of the handler's own. A message

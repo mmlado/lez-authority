@@ -2,7 +2,7 @@
 //! root, as every role crate re-exports it.
 
 pub use lez_authority;
-pub use lez_authority::{AuthoritySlot, Gated, HasSlot, Policy, Role, Wire, guard};
+pub use lez_authority::{AuthoritySlot, Gated, HasSlot, Hooks, Policy, Role, Wire, guard};
 
 /// A role that answers to nobody.
 pub struct Sample;
@@ -13,3 +13,4 @@ impl Role for Sample {
 }
 
 impl<C: HasSlot<Sample>> Policy<C> for Sample {}
+impl<C: HasSlot<Sample>> Hooks<C> for Sample {}

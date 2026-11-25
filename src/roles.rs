@@ -11,7 +11,7 @@ use crate::*;
 /// sends with it.
 pub(crate) fn run_op<R, C>(ctx: &Ctx, config: &mut C, op: Op) -> Result<Vec<SyncMessage>, Refusal>
 where
-    R: Policy<C>,
+    R: Hooks<C>,
     C: HasSlot<R>,
 {
     let refuse = Refusal::of::<R>;
@@ -100,7 +100,7 @@ where
 /// the message is exempt from it.
 fn may_run<R, C, M>(ctx: &Ctx, config: &C, message: &M) -> Result<Vec<SyncMessage>, Refusal>
 where
-    R: Policy<C>,
+    R: Hooks<C>,
     C: HasSlot<R>,
     M: Gated,
 {
@@ -142,7 +142,7 @@ const fn exemptions_refuse(names: &[&str], refuses: &[bool], exempted: &[&str]) 
 /// Whether role `R` refuses program messages and `message` is not exempt from it.
 fn asks<R, C, M>(message: &M) -> bool
 where
-    R: Policy<C>,
+    R: Hooks<C>,
     C: HasSlot<R>,
     M: Gated,
 {
@@ -152,7 +152,7 @@ where
 /// Role `R`'s answer to a request for clearance, if it refuses program messages.
 fn clears<R, C>(ctx: &Ctx, config: &C) -> Result<Vec<SyncMessage>, Refusal>
 where
-    R: Policy<C>,
+    R: Hooks<C>,
     C: HasSlot<R>,
 {
     if !R::REFUSES_MESSAGES {
@@ -199,7 +199,7 @@ mod sealed {
 }
 
 /// A program's roles, as a tuple: one role, `(A,)`, or two, `(A, B)`. Each role has its own
-/// slot in the config, through [`HasSlot`], and its own [`Policy`]. The first role is the
+/// slot in the config, through [`HasSlot`], and its own [`Policy`] and [`Hooks`]. The first role is the
 /// root: its install creates the config, and the guard's own refusals name it.
 pub trait Roles<C, M>: sealed::Sealed {
     /// The root role's name.
@@ -279,7 +279,7 @@ pub trait Roles<C, M>: sealed::Sealed {
 /// Role `R`'s look at an actor's state before the handler, if it watches state.
 fn may_handle<R, C>(ctx: &Ctx, state: &[u8]) -> Result<(), Refusal>
 where
-    R: Policy<C>,
+    R: Hooks<C>,
     C: HasSlot<R>,
 {
     if !R::WATCHES_STATE {
@@ -291,7 +291,7 @@ where
 /// Role `R`'s look at the handler's write, if it watches state.
 fn may_write<R, C>(ctx: &Ctx, before: &[u8], after: Option<&[u8]>) -> Result<(), Refusal>
 where
-    R: Policy<C>,
+    R: Hooks<C>,
     C: HasSlot<R>,
 {
     if !R::WATCHES_STATE {
@@ -302,7 +302,7 @@ where
 
 impl<C, M, A> Roles<C, M> for (A,)
 where
-    A: Policy<C>,
+    A: Hooks<C>,
     C: HasSlot<A>,
     M: Gated,
 {
@@ -377,8 +377,8 @@ where
 
 impl<C, M, A, B> Roles<C, M> for (A, B)
 where
-    A: Policy<C>,
-    B: Policy<C>,
+    A: Hooks<C>,
+    B: Hooks<C>,
     C: HasSlot<A> + HasSlot<B>,
     M: Gated,
 {

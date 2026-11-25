@@ -24,8 +24,9 @@
 //! Each keeps its own slot in the config. The first creates the config.
 //!
 //! This crate is policy-free. Which role a slot plays comes from the consumer through
-//! [`Role`], and who may install, nominate and renounce, what a role's own operations do, and
-//! which program messages may run, over which state and with which writes, through [`Policy`].
+//! [`Role`], who may install, nominate and renounce through [`Policy`], and what a role's own
+//! operations do and which program messages may run, over which state and with which writes,
+//! through [`Hooks`].
 
 #![warn(missing_docs)]
 
@@ -46,7 +47,7 @@ mod wire;
 pub use lez_authority_core::{
     AuthorityError, AuthoritySlot, HasSlot, Holder, InitGate, Refusal, Role, Slot,
 };
-pub use role::{Ctx, Policy};
+pub use role::{Ctx, Hooks, Policy};
 pub use roles::Roles;
 pub use routing::{config_account, guard, own_actor, seed, try_guard};
 pub use slot::Caller;

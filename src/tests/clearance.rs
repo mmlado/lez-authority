@@ -16,7 +16,9 @@ const VIA_SEEN: AuthorityError = AuthorityError::Role {
     sentence: "the caller came with a via",
 };
 
-impl<C: HasSlot<Pausing>> Policy<C> for Pausing {
+impl<C: HasSlot<Pausing>> Policy<C> for Pausing {}
+
+impl<C: HasSlot<Pausing>> Hooks<C> for Pausing {
     const REFUSES_MESSAGES: bool = true;
 
     fn may_run(ctx: &Ctx, config: &C) -> Result<Vec<SyncMessage>, Refusal> {

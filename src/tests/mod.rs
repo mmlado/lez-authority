@@ -45,6 +45,7 @@ impl Role for First {
 }
 
 impl<C: HasSlot<First>> Policy<C> for First {}
+impl<C: HasSlot<First>> Hooks<C> for First {}
 
 struct Second;
 
@@ -71,6 +72,8 @@ impl<C: HasSlot<First> + HasSlot<Second>> Policy<C> for Second {
         AuthoritySlot::Unset
     }
 }
+
+impl<C: HasSlot<First> + HasSlot<Second>> Hooks<C> for Second {}
 
 #[derive(Debug, Default, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 struct Two {
@@ -243,7 +246,9 @@ const BARRED: AuthorityError = AuthorityError::Role {
 };
 
 // Its own operation sets the mark, and a zero mark stops program messages, as a freeze does.
-impl<C: HasSlot<Marking>> Policy<C> for Marking {
+impl<C: HasSlot<Marking>> Policy<C> for Marking {}
+
+impl<C: HasSlot<Marking>> Hooks<C> for Marking {
     const REFUSES_MESSAGES: bool = true;
 
     fn operate(ctx: &Ctx, config: &C, op: &[u8]) -> Result<(Marked, Vec<SyncMessage>), Refusal> {
@@ -508,7 +513,9 @@ const STOPPED: AuthorityError = AuthorityError::Role {
     sentence: "the halt is on",
 };
 
-impl<C: HasSlot<Halting>> Policy<C> for Halting {
+impl<C: HasSlot<Halting>> Policy<C> for Halting {}
+
+impl<C: HasSlot<Halting>> Hooks<C> for Halting {
     fn may_run(_ctx: &Ctx, config: &C) -> Result<Vec<SyncMessage>, Refusal> {
         if HasSlot::<Halting>::slot(config).mark == 0 {
             return Err(Refusal::of::<Halting>(STOPPED));

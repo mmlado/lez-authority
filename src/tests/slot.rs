@@ -11,6 +11,7 @@ impl Role for Hold {
 }
 
 impl<C: HasSlot<Hold>> Policy<C> for Hold {}
+impl<C: HasSlot<Hold>> Hooks<C> for Hold {}
 
 struct One(AuthoritySlot);
 

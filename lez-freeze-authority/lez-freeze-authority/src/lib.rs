@@ -13,8 +13,8 @@ pub use lez_admin_authority;
 pub use lez_admin_authority::lez_authority;
 pub use lez_admin_authority::{Admin, AdminOp, admin_op};
 pub use lez_authority::{
-    AuthorityError, AuthoritySlot, Caller, Gated, HasSlot, Holder, InitGate, Op, Policy, Refusal,
-    Role, Slot, Wire, config_account, guard, seed,
+    AuthorityError, AuthoritySlot, Caller, Gated, HasSlot, Holder, Hooks, InitGate, Op, Policy,
+    Refusal, Role, Slot, Wire, config_account, guard, seed,
 };
 
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -204,8 +204,6 @@ where
     C: HasSlot<Freeze> + HasSlot<Admin>,
 {
     const BY_NOMINATION_ONLY: bool = true;
-    const REFUSES_MESSAGES: bool = true;
-    const WATCHES_STATE: bool = true;
 
     fn may_nominate(ctx: &Ctx, config: &C) -> Result<(), Refusal> {
         freeze_authority_or_admin(ctx, config)
@@ -218,6 +216,14 @@ where
     fn renounced() -> AuthoritySlot {
         AuthoritySlot::Unset
     }
+}
+
+impl<C> Hooks<C> for Freeze
+where
+    C: HasSlot<Freeze> + HasSlot<Admin>,
+{
+    const REFUSES_MESSAGES: bool = true;
+    const WATCHES_STATE: bool = true;
 
     fn operate(
         ctx: &Ctx,

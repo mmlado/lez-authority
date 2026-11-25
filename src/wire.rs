@@ -31,7 +31,7 @@ pub enum Op {
     /// holder part stays renounced for good. Whatever else the role keeps in its slot stays.
     Renounce,
     /// One of the operations the role defines for itself, such as a freeze, encoded as the
-    /// role encodes it. [`Policy::operate`] runs it.
+    /// role encodes it. [`Hooks::operate`] runs it.
     Own(
         // A length in front would hide the role's type from an IDL, so the bytes run to the end.
         #[borsh(
@@ -84,7 +84,7 @@ pub enum LibraryMessage {
     /// the config.
     Clearance(Clearance),
     /// A role's own message, from the config to the role's own actor for `key`, which hands it
-    /// to the role's [`Policy::receive`] with that actor's state. The handler never sees it. A
+    /// to the role's [`Hooks::receive`] with that actor's state. The handler never sees it. A
     /// role builds one with [`Ctx::own_message`].
     Own {
         /// The role's [`Role::NAME`].
@@ -181,7 +181,7 @@ impl<M: BorshDeserialize> BorshDeserialize for Wire<M> {
 /// What the program's messages declare to the guard. Derive it with `#[only(Role)]` on a
 /// message that needs a role's holder, the way `onlyOwner` marks a Solidity function,
 /// `#[from_config]` on one that only the config account may send, and `#[exempt(Role)]` on one
-/// that runs where that role's [`Policy::may_run`] would refuse it, though a role that watches
+/// that runs where that role's [`Hooks::may_run`] would refuse it, though a role that watches
 /// state still looks at the state around its handler. The derive compares roles by
 /// [`Role::NAME`], as the guard does, so a role crate linked twice is still one role. A
 /// hand-written impl does the same and lists its roles in [`Gated::MARKED`].
@@ -216,7 +216,7 @@ pub trait Gated {
         false
     }
 
-    /// Whether this message runs where role `R`'s [`Policy::may_run`] would refuse it, as an
+    /// Whether this message runs where role `R`'s [`Hooks::may_run`] would refuse it, as an
     /// exempt message runs through a freeze. The mark covers this message only.
     fn exempt<R: Role>(&self) -> bool {
         false

@@ -1,4 +1,4 @@
-//! A role's rules, and what those rules see.
+//! A role's rules and hooks, and what they see.
 
 use lee_core::account::Actor;
 use lee_core::program::SyncMessage;
@@ -6,12 +6,10 @@ use lee_core::program::SyncMessage;
 use crate::routing::own_actor_and_seed;
 use crate::*;
 
-/// Who may install, nominate and renounce role `Self` in a config `C`, what the operations and
-/// messages it defines for itself do, and which program messages may run, over which state and
-/// with which writes. Every method holds the rule of a role that answers to nobody else, defines
-/// no operations or messages of its own and lets every message run and every write stand, so such
-/// a role implements it empty. A role that answers to another, as a freeze authority answers to
-/// the admin, overrides the rules that differ and reads the other role's slot through `C`.
+/// Who may install, nominate and renounce role `Self` in a config `C`, and what renounce leaves.
+/// Every method holds the rule of a role that answers to nobody else, so such a role implements
+/// it empty. A role that answers to another, as a freeze authority answers to the admin,
+/// overrides the rules that differ and reads the other role's slot through `C`.
 pub trait Policy<C>: Role + Sized
 where
     C: HasSlot<Self>,
@@ -21,20 +19,6 @@ where
     /// config. The guard attribute refuses a first role with it where `cargo check` sees it,
     /// at its `roles(..)`. A guard called by hand is refused at `cargo build`.
     const BY_NOMINATION_ONLY: bool = false;
-
-    /// Whether the role's consent refuses program messages, as a freeze refuses every one while
-    /// the program is frozen. The guard asks [`Policy::may_run`] only of a role that sets it, so a
-    /// consent a role does not declare here is never asked: at the config, and for a program message
-    /// handled at another actor of the program, through a request for clearance to the config. A
-    /// guard takes one such role at most, since a request for clearance names no role
-    /// (lez-authority ADR-0005), and two do not compile.
-    const REFUSES_MESSAGES: bool = false;
-
-    /// Whether the role looks at the state of each actor the handler runs at, through
-    /// [`Policy::may_handle`] before the handler and [`Policy::may_write`] after it. The guard
-    /// asks only a role that sets it, so a program whose roles leave it unset pays nothing for
-    /// the looks.
-    const WATCHES_STATE: bool = false;
 
     /// Who may install the first holder of a slot that has none. By default whoever passes the
     /// program's init gate, at top level.
@@ -67,6 +51,29 @@ where
     fn renounced() -> AuthoritySlot {
         AuthoritySlot::Renounced
     }
+}
+
+/// What role `Self` adds to the guard beside its [`Policy`]: the operations and messages it
+/// defines for itself, and which program messages may run, over which state and with which
+/// writes. Every item holds the hook of a role that defines no operations or messages of its own
+/// and lets every message run and every write stand, so such a role implements it empty.
+pub trait Hooks<C>: Policy<C>
+where
+    C: HasSlot<Self>,
+{
+    /// Whether the role's consent refuses program messages, as a freeze refuses every one while
+    /// the program is frozen. The guard asks [`Hooks::may_run`] only of a role that sets it, so a
+    /// consent a role does not declare here is never asked: at the config, and for a program message
+    /// handled at another actor of the program, through a request for clearance to the config. A
+    /// guard takes one such role at most, since a request for clearance names no role
+    /// (lez-authority ADR-0005), and two do not compile.
+    const REFUSES_MESSAGES: bool = false;
+
+    /// Whether the role looks at the state of each actor the handler runs at, through
+    /// [`Hooks::may_handle`] before the handler and [`Hooks::may_write`] after it. The guard
+    /// asks only a role that sets it, so a program whose roles leave it unset pays nothing for
+    /// the looks.
+    const WATCHES_STATE: bool = false;
 
     /// Runs one of the operations the role defines for itself, from the bytes of
     /// [`Op::Own`], and returns the role's slot as the operation leaves it, with the sync
@@ -91,7 +98,7 @@ where
 
     /// Whether a program message may run under the role's rules, as a freeze refuses every one
     /// while the program is frozen. The guard asks it of a role that sets
-    /// [`Policy::REFUSES_MESSAGES`]: at the config, after the holders the message needs and
+    /// [`Hooks::REFUSES_MESSAGES`]: at the config, after the holders the message needs and
     /// before the handler, and for a message handled at another actor of the program, at its
     /// request for clearance after the handler. It is not asked for a message marked
     /// `#[exempt(Self)]`, and a management operation never reaches it, so the role's operations
@@ -132,7 +139,7 @@ where
     }
 
     /// Whether the handler may run at an actor of the program, from that actor's state. The guard
-    /// asks it of a role that sets [`Policy::WATCHES_STATE`], just before the handler at every
+    /// asks it of a role that sets [`Hooks::WATCHES_STATE`], just before the handler at every
     /// actor of the program, the config included. At the config that is after the holders the
     /// message needs and the consent. It asks for a message exempt from the role too. So a role
     /// can keep the program off any actor whose state it recognizes, as a freeze keeps it off its
@@ -141,7 +148,7 @@ where
     /// The look is not told which actor it runs at. So an actor that holds none of the role's
     /// state, such as a role's own actor before its first write, runs any handler. A management
     /// operation, a seat's forward, a request for clearance and a role's own message run no
-    /// handler, so neither this look nor [`Policy::may_write`] sees them. `ctx.caller()` is none.
+    /// handler, so neither this look nor [`Hooks::may_write`] sees them. `ctx.caller()` is none.
     /// By default the handler runs at every actor.
     ///
     /// # Errors
@@ -152,8 +159,8 @@ where
 
     /// Whether the handler's write may stand, from the state of the actor it ran at, `before`,
     /// and the state it wrote there, `after`, or `None` when it kept the state. The guard asks it
-    /// of a role that sets [`Policy::WATCHES_STATE`] after the handler, wherever it asked
-    /// [`Policy::may_handle`], once the handler's sends are checked. So a role can keep the
+    /// of a role that sets [`Hooks::WATCHES_STATE`] after the handler, wherever it asked
+    /// [`Hooks::may_handle`], once the handler's sends are checked. So a role can keep the
     /// program from writing state it recognizes, as a freeze keeps it from writing a mark.
     /// `ctx.caller()` is none. By default every write stands.
     ///
@@ -164,7 +171,7 @@ where
     }
 }
 
-/// What a [`Policy`] sees: who is speaking, if the message came through the sender's own
+/// What a role's [`Policy`] and [`Hooks`] see: who is speaking, if the message came through the sender's own
 /// actor, the config's actor, and the program's init gate. At a role's own message and at the
 /// looks around the handler it holds no caller.
 pub struct Ctx {
@@ -190,7 +197,7 @@ impl Ctx {
     }
 
     /// Role `R`'s own message to its own actor for `key`, [`own_actor`], for `R`'s consent or
-    /// operation to return. That actor hands `message` to [`Policy::receive`]. The message names
+    /// operation to return. That actor hands `message` to [`Hooks::receive`]. The message names
     /// the actor's seed, so it reaches the actor before the actor holds any state.
     #[must_use]
     pub fn own_message<R: Role>(&self, key: [u8; 32], message: Vec<u8>) -> SyncMessage {

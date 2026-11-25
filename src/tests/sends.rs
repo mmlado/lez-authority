@@ -143,7 +143,9 @@ fn sent(ctx: &Ctx, mark: u64) -> Vec<SyncMessage> {
     }
 }
 
-impl<C: HasSlot<Sending>> Policy<C> for Sending {
+impl<C: HasSlot<Sending>> Policy<C> for Sending {}
+
+impl<C: HasSlot<Sending>> Hooks<C> for Sending {
     const REFUSES_MESSAGES: bool = true;
 
     fn operate(ctx: &Ctx, config: &C, op: &[u8]) -> Result<(Marked, Vec<SyncMessage>), Refusal> {

@@ -12,8 +12,8 @@
 /// The crate underneath, which the macros reach through this one.
 pub use lez_authority;
 pub use lez_authority::{
-    AuthorityError, AuthoritySlot, Caller, Gated, HasSlot, Holder, InitGate, Policy, Refusal, Role,
-    Slot, Wire, config_account, guard, seed,
+    AuthorityError, AuthoritySlot, Caller, Gated, HasSlot, Holder, Hooks, InitGate, Policy,
+    Refusal, Role, Slot, Wire, config_account, guard, seed,
 };
 
 /// The admin's operations: `Init`, `Nominate`, `Accept` and `Renounce`. A client sends them
@@ -34,6 +34,7 @@ impl Role for Admin {
 /// The admin answers to nobody: the deployer or the genesis key installs it, the holder
 /// nominates and renounces, and renounce is for good.
 impl<C: HasSlot<Admin>> Policy<C> for Admin {}
+impl<C: HasSlot<Admin>> Hooks<C> for Admin {}
 
 /// A client's message for one of the admin operations, to send to the sender's own actor.
 #[must_use]
