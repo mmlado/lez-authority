@@ -17,7 +17,7 @@ lez-admin-authority and lez-freeze-authority live in this repository, beside lez
 
 - The crate lives in `lez-admin-authority/` of this repository, and a program depends on it through this repository's URL and tag.
 - lez-authority comes in by path, at the same version, in place of its `v0.2.0` tag.
-- The sample's packages are `admin-sample`, `admin-sample-core`, `admin-sample-minimal`, `admin-sample-methods` and `admin-sample-runner`. The runner is a workspace of its own, with its own lock and audit policy, and the methods crate's lock is tracked.
+- The sample's packages are `admin-sample`, `admin-sample-core`, `admin-sample-minimal`, `admin-sample-methods` and `admin-sample-runner`. The runner is a workspace of its own, with its own lock and audit policy, and the methods crate's lock is tracked, with an audit policy of its own.
 
 ## [0.2.0] - 2026-11-11
 

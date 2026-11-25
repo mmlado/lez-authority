@@ -24,20 +24,21 @@ jobs:
       - name: Audit against the recorded policy
         run: cargo audit
 
-  runners:
-    name: Audit, ${{ matrix.role }} runner
+  standalone:
+    name: Audit, ${{ matrix.role }} ${{ matrix.part }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         role: [admin, freeze]
+        part: [runner, methods]
     defaults:
       run:
-        working-directory: lez-${{ matrix.role }}-authority/sample/runner
+        working-directory: lez-${{ matrix.role }}-authority/sample/${{ matrix.part }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
-      - name: Audit against the runner's policy
+      - name: Audit against the folder's policy
         run: cargo audit

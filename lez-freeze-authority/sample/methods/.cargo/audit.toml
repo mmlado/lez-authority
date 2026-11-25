@@ -1,0 +1,13 @@
+# cargo-audit policy. Every ignored advisory arrives through the pinned LEZ
+# dependencies, lee_core for the sample's types and lee for the executor the
+# overhead tests run, and is not selectable from this workspace. Revisit on
+# every LEZ pin bump.
+[advisories]
+ignore = [
+    "RUSTSEC-2025-0055", # tracing-subscriber 0.2 ANSI log poisoning, via risc0-zkvm -> lee_core
+    "RUSTSEC-2024-0388", # derivative unmaintained, arkworks provenance
+    "RUSTSEC-2024-0436", # paste unmaintained, arkworks provenance
+    "RUSTSEC-2025-0141", # bincode 1 unmaintained, via risc0-zkvm -> lee_core
+    "RUSTSEC-2023-0071", # rsa Marvin timing side channel, via rzup -> risc0-build -> risc0-zkvm
+    "RUSTSEC-2026-0387", # crypto-bigint timing variability, via k256 -> lee
+]
