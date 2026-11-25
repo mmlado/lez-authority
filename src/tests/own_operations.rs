@@ -11,15 +11,16 @@ impl Role for Seizing {
 }
 
 impl<C: HasSlot<Seizing>> Policy<C> for Seizing {
-    fn operate(ctx: &Ctx, config: &C, _op: &[u8]) -> Result<Marked, Refusal> {
+    fn operate(ctx: &Ctx, config: &C, _op: &[u8]) -> Result<(Marked, Vec<SyncMessage>), Refusal> {
         let caller = ctx.caller().unwrap();
-        Ok(Marked {
+        let slot = Marked {
             authority_slot: AuthoritySlot::held(Holder {
                 account: caller.account(),
                 via: caller.via(),
             }),
             mark: HasSlot::<Seizing>::slot(config).mark + 1,
-        })
+        };
+        Ok((slot, Vec::new()))
     }
 }
 
@@ -135,7 +136,7 @@ fn a_role_s_own_operation_never_moves_its_holder() {
         let mut config = marked(authority_slot.clone());
         let ctx = Ctx {
             caller: Some(caller(OTHER, Some(ELSEWHERE))),
-            program: PROGRAM,
+            config: config_actor(),
             gate: InitGate::Deployer,
         };
         run_op::<Seizing, WithMark>(&ctx, &mut config, Op::Own(Vec::new())).unwrap();

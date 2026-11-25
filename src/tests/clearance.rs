@@ -19,11 +19,12 @@ const VIA_SEEN: AuthorityError = AuthorityError::Role {
 impl<C: HasSlot<Pausing>> Policy<C> for Pausing {
     const REFUSES_MESSAGES: bool = true;
 
-    fn may_run(ctx: &Ctx, config: &C) -> Result<(), Refusal> {
+    fn may_run(ctx: &Ctx, config: &C) -> Result<Vec<SyncMessage>, Refusal> {
         if ctx.caller().is_some_and(|caller| caller.via().is_some()) {
             return Err(Refusal::of::<Pausing>(VIA_SEEN));
         }
-        ctx.check::<Pausing>(HasSlot::<Pausing>::slot(config))
+        ctx.check::<Pausing>(HasSlot::<Pausing>::slot(config))?;
+        Ok(Vec::new())
     }
 }
 

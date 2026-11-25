@@ -5,7 +5,19 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+Up to 0.2.0 this file covers lez-authority only. From 0.3.0 it covers the three crates of this repository, which share one version, with a section for each crate that changed. lez-admin-authority's releases up to 0.2.0 are in [its own changelog](lez-admin-authority/CHANGELOG.md), and lez-freeze-authority's first release is 0.3.0.
+
 ## [Unreleased]
+
+lez-admin-authority and lez-freeze-authority live in this repository, beside lez-authority, and the three crates share one version and one tag ([lez-authority ADR-0007](docs/adr/0007-one-repository-at-one-version.md)).
+
+### lez-admin-authority
+
+#### Changed
+
+- The crate lives in `lez-admin-authority/` of this repository, and a program depends on it through this repository's URL and tag.
+- lez-authority comes in by path, at the same version, in place of its `v0.2.0` tag.
+- The sample's packages are `admin-sample`, `admin-sample-core`, `admin-sample-minimal`, `admin-sample-methods` and `admin-sample-runner`. The runner is a workspace of its own, with its own lock and audit policy, and the methods crate's lock is tracked, with an audit policy of its own.
 
 ## [0.2.0] - 2026-11-11
 

@@ -42,7 +42,7 @@ pub enum Op {
     ),
 }
 
-/// The bytes of [`Op::Own`], to the end of the message.
+/// The bytes of [`Op::Own`] and of [`LibraryMessage::Own`], to the end of the message.
 mod rest {
     use std::io::{Read, Result, Write};
 
@@ -83,6 +83,34 @@ pub enum LibraryMessage {
     /// A request for clearance, from the actor of the program that handled a program message to
     /// the config.
     Clearance(Clearance),
+    /// A role's own message, from the config to the role's own actor for `key`, which hands it
+    /// to the role's [`Policy::receive`] with that actor's state. The handler never sees it. A
+    /// role builds one with [`Ctx::own_message`].
+    Own {
+        /// The role's [`Role::NAME`].
+        role: String,
+        /// The key the role's own actor is derived from, with the role and the config, as
+        /// [`own_actor`] derives it.
+        key: [u8; 32],
+        /// The message, encoded as the role encodes it. Its bytes carry no length and run to the
+        /// end of the message, as those of [`Op::Own`] do.
+        #[borsh(
+            serialize_with = "rest::serialize",
+            deserialize_with = "rest::deserialize"
+        )]
+        message: Vec<u8>,
+    },
+}
+
+/// The role a role's own message names, if `bytes` are one.
+pub(crate) fn own_message_role(bytes: &[u8]) -> Option<String> {
+    if bytes.first() != Some(&LIBRARY_TAG) {
+        return None;
+    }
+    match borsh::from_slice(bytes) {
+        Ok(Wire::<()>::Library(LibraryMessage::Own { role, .. })) => Some(role),
+        _ => None,
+    }
 }
 
 /// What a request for clearance says: only whether the sending actor's own account authorized
@@ -153,7 +181,8 @@ impl<M: BorshDeserialize> BorshDeserialize for Wire<M> {
 /// What the program's messages declare to the guard. Derive it with `#[only(Role)]` on a
 /// message that needs a role's holder, the way `onlyOwner` marks a Solidity function,
 /// `#[from_config]` on one that only the config account may send, and `#[exempt(Role)]` on one
-/// that runs where that role's rules would refuse it. The derive compares roles by
+/// that runs where that role's [`Policy::may_run`] would refuse it, though a role that watches
+/// state still looks at the state around its handler. The derive compares roles by
 /// [`Role::NAME`], as the guard does, so a role crate linked twice is still one role. A
 /// hand-written impl does the same and lists its roles in [`Gated::MARKED`].
 ///

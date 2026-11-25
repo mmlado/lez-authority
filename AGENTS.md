@@ -12,4 +12,4 @@ The five default labels, each named after its role. See `docs/agents/triage-labe
 
 ### Domain docs
 
-Single-context: `CONTEXT.md` at the root, decisions in `docs/adr/`. See `docs/agents/domain.md`.
+Multi-context: `CONTEXT-MAP.md` at the root names the three contexts, the engine, the admin and the freeze, each with its `CONTEXT.md`. Decisions are in `docs/adr/` for the engine and the repository, and in `lez-freeze-authority/docs/adr/` for the freeze. See `docs/agents/domain.md`.

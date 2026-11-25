@@ -1,0 +1,12 @@
+[package]
+name = "lez-admin-authority"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Single-admin authority for LEZ actor programs: the admin role of lez-authority"
+repository.workspace = true
+readme = "../README.md"
+
+[dependencies]
+lez-admin-authority-macros = { path = "../lez-admin-authority-macros" }
+lez-authority.workspace = true

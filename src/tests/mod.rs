@@ -12,7 +12,9 @@ mod own_operations;
 mod refusing;
 mod role_slots;
 mod routing;
+mod sends;
 mod slot;
+mod watching;
 
 const KEY: AccountId = AccountId::new([1; 32]);
 const OTHER: AccountId = AccountId::new([2; 32]);
@@ -32,8 +34,7 @@ fn held(account: AccountId) -> AuthoritySlot {
     AuthoritySlot::held(Holder { account, via: None })
 }
 
-// A program with two roles. The second answers to the first, as a freeze authority would to
-// the admin.
+// Two roles shaped like the admin and a freeze authority that answers to it.
 
 struct First;
 
@@ -218,8 +219,7 @@ fn two(second: Option<AccountId>) -> Two {
     }
 }
 
-// A role that keeps more than its holder in its slot, as a freeze authority keeps what it
-// froze.
+// A role whose slot holds more than its holder, as a freeze authority's holds what it froze.
 
 struct Marking;
 
@@ -246,25 +246,26 @@ const BARRED: AuthorityError = AuthorityError::Role {
 impl<C: HasSlot<Marking>> Policy<C> for Marking {
     const REFUSES_MESSAGES: bool = true;
 
-    fn operate(ctx: &Ctx, config: &C, op: &[u8]) -> Result<Marked, Refusal> {
+    fn operate(ctx: &Ctx, config: &C, op: &[u8]) -> Result<(Marked, Vec<SyncMessage>), Refusal> {
         let mark = borsh::from_slice(op)
             .map_err(|_| Refusal::of::<Marking>(AuthorityError::MessageDoesNotDecode))?;
         let slot = HasSlot::<Marking>::slot(config);
         ctx.check::<Marking>(slot.authority_slot())?;
-        Ok(Marked {
+        let slot = Marked {
             authority_slot: slot.authority_slot.clone(),
             mark,
-        })
+        };
+        Ok((slot, Vec::new()))
     }
 
-    fn may_run(ctx: &Ctx, config: &C) -> Result<(), Refusal> {
+    fn may_run(ctx: &Ctx, config: &C) -> Result<Vec<SyncMessage>, Refusal> {
         if HasSlot::<Marking>::slot(config).mark == 0 {
             return Err(Refusal::of::<Marking>(HALTED));
         }
         if ctx.caller().is_some_and(|caller| caller.account() == OTHER) {
             return Err(Refusal::of::<Marking>(BARRED));
         }
-        Ok(())
+        Ok(Vec::new())
     }
 }
 
@@ -508,11 +509,11 @@ const STOPPED: AuthorityError = AuthorityError::Role {
 };
 
 impl<C: HasSlot<Halting>> Policy<C> for Halting {
-    fn may_run(_ctx: &Ctx, config: &C) -> Result<(), Refusal> {
+    fn may_run(_ctx: &Ctx, config: &C) -> Result<Vec<SyncMessage>, Refusal> {
         if HasSlot::<Halting>::slot(config).mark == 0 {
             return Err(Refusal::of::<Halting>(STOPPED));
         }
-        Ok(())
+        Ok(Vec::new())
     }
 }
 

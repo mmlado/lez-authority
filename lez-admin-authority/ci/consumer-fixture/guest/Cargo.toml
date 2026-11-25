@@ -1,0 +1,17 @@
+[package]
+name = "consumer-fixture-guest"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[[bin]]
+name = "consumer_fixture"
+path = "src/bin/consumer_fixture.rs"
+
+[dependencies]
+borsh = { version = "1", features = ["derive"] }
+lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone", tag = "v0.4.0-rc3" }
+lez-admin-authority = { git = "https://github.com/mmlado/lez-admin-authority", tag = "v0.2.0" }
+risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] }

@@ -1,0 +1,13 @@
+[package]
+name = "admin-sample"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Sample program: two values, two setters, one for the admin only"
+publish = false
+
+[dependencies]
+admin-sample-core = { path = "core" }
+borsh.workspace = true
+lee_core.workspace = true
+lez-admin-authority.workspace = true

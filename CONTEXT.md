@@ -44,24 +44,36 @@ The first of a program's roles. Its install creates the config, and the guard's 
 _Avoid_: main role, primary role
 
 **Policy**:
-A role's rules: who may install its first holder, who may nominate, who may renounce, what renounce leaves, what the operations it defines for itself do, and whether a program message may run. A role that answers to nobody keeps the defaults. A role that answers to another, as a freeze authority answers to the admin, reads that role's slot.
+A role's rules: who may install its first holder, who may nominate, who may renounce, what renounce leaves, what the operations and the own messages it defines for itself do, and whether a program message may run, over which state and with which write. A consent and an operation may come with sync messages, which the config sends. A role that answers to nobody keeps the defaults. A role that answers to another, as a freeze authority answers to the admin, reads that role's slot.
 _Avoid_: permissions, access rules
 
 **Guard**:
-What runs in front of a program's handler: it forwards at seats, unwraps hops at the config, runs management operations, checks the holders a message declares, asks the role that refuses program messages whether one may run, and refuses a handler that changed a slot. The guard attribute puts it there.
+What runs in front of a program's handler: it forwards at seats, unwraps hops at the config, runs management operations, checks the holders a message declares, asks the role that refuses program messages whether one may run, hands a role its own message at the role's own actor, and refuses a handler that changed a slot. The guard attribute puts it there.
 _Avoid_: dispatcher, framework, runtime
+
+**Hook**:
+A point in the guard where a role's policy adds to what the guard does, with the guard's own rules kept around it. A consent that comes with sync messages is one, an operation that does is another, a role's own message handled at the role's own actor is a third, and a look at the state before and after the plain handler is a fourth.
+_Avoid_: plugin, middleware, interceptor
 
 **Plain handler**:
 A LEZ program's own handler, taking the receive input and the program's message and returning the response, as it would without the library.
 _Avoid_: callback, hook
 
 **Context**:
-What a role's policy sees: the caller, if any, and the program's init gate. The handler never sees it.
+What a role's policy sees: the caller, if any, the config's actor, and the program's init gate. The handler never sees it.
 _Avoid_: ctx in prose, session
 
 **Library message**:
-A message of the library's, not the program's: a role's management operation, the hop, or a request for clearance. It starts with the byte 255, so it travels next to the program's messages without the program's enum hosting it.
+A message of the library's, not the program's: a role's management operation, the hop, a request for clearance, or a role's own message. It starts with the byte 255, so it travels next to the program's messages without the program's enum hosting it.
 _Avoid_: hosted variant, injected instruction (the v0.2 word)
+
+**Own message**:
+A role's message from the config to one of the role's own actors, which that actor hands to the role with its own state, never to the handler. Only a role's consent or operation sends one.
+_Avoid_: callback, role call
+
+**Own actor**:
+An actor of the program that only one role writes, through its own messages: the PDA of the program for a key the role chooses, with a seed that binds the role and the config. A freeze authority's marker for an account is one.
+_Avoid_: role account, role PDA
 
 **Management operation**:
 A library message the guard runs at the config under its role's policy, without the handler: install, nominate, accept and renounce on the role's slot, and the operations a role defines for itself, such as a freeze.
@@ -96,7 +108,7 @@ A program message that only the config account may send, as it does to the progr
 _Avoid_: internal message, hub message
 
 **Exempt message**:
-A program message its program marked to run where one role's rules would refuse it, as an exempt message runs through a freeze. The mark names the role and covers that message only. It still needs its holders.
+A program message its program marked to run where one role's consent would refuse it, as an exempt message runs through a freeze. The mark names the role and covers that message only. It still needs its holders.
 _Avoid_: whitelisted message, carve-out
 
 **Hub**:

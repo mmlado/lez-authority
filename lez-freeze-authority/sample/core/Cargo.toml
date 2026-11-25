@@ -1,0 +1,12 @@
+[package]
+name = "freeze-sample-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Types of the token sample: its config, its messages, its config account"
+publish = false
+
+[dependencies]
+borsh.workspace = true
+lee_core.workspace = true
+lez-freeze-authority.workspace = true

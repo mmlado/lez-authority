@@ -1,0 +1,25 @@
+[package]
+name = "admin-sample-methods"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Builds the sample guest into the program binary the loader deploys"
+publish = false
+
+# Standalone on purpose: building it needs the risc0 toolchain, the workspace's host tests do not.
+[workspace]
+
+[build-dependencies]
+risc0-build = "3.0.5"
+
+[package.metadata.risc0]
+methods = [".."]
+
+# For tests/overhead.rs only: the host executor that runs the guest and counts cycles.
+[dev-dependencies]
+admin-sample-core = { path = "../core" }
+borsh = { version = "1", features = ["derive"] }
+lee = { git = "https://github.com/logos-blockchain/logos-execution-zone", tag = "v0.4.0-rc3" }
+lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone", tag = "v0.4.0-rc3" }
+lez-admin-authority = { path = "../../lez-admin-authority" }
+risc0-zkvm = { version = "3.0.5", default-features = false, features = ["std", "client"] }

@@ -1,0 +1,21 @@
+[package]
+name = "freeze-sample-runner"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Drives the token sample on a local sequencer through the LEZ wallet library"
+publish = false
+
+# Standalone on purpose: the wallet stack and its advisories stay out of the workspace's lock.
+[workspace]
+
+[dependencies]
+freeze-sample-core = { path = "../core" }
+anyhow = "1"
+borsh = { version = "1", features = ["derive"] }
+lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone", tag = "v0.4.0-rc3" }
+lez-freeze-authority = { path = "../../lez-freeze-authority" }
+program_loader_core = { git = "https://github.com/logos-blockchain/logos-execution-zone", tag = "v0.4.0-rc3" }
+risc0-binfmt = "3.0.5"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+wallet = { git = "https://github.com/logos-blockchain/logos-execution-zone", tag = "v0.4.0-rc3" }
