@@ -145,7 +145,7 @@ A role crate, one that defines roles for programs to use, is named `lez-<role>-a
 | `#[derive(HasSlot)]`, `#[slot(R)]` | the config, its slot field | `HasSlot<R>` |
 | `#[derive(Gated)]`, `#[only(R)]`, `#[from_config]`, `#[exempt(R)]` | the message enum, its variants | `Gated` |
 
-`#[only]` and `#[exempt]` take one role each, and it must be one of the guard's roles. The guard knows a role by its name, as a client's operation does, so a program's roles need a name each, and a role crate linked twice is still one role. A misplaced marker is a compile error with the reason, such as `a message is either #[only(..)], sent through the sender's seat, or #[from_config], sent by the config`, and the attribute refuses a marker naming a role it does not list where `cargo check` sees it, and an `#[exempt(R)]` naming a role that refuses no program messages. [`tests/macros.rs`](tests/macros.rs) holds the derives against hand-written impls, and a handler under the attribute against its hand expansion, input by input, refusals included. The macros find this crate through a direct dependency on it, or on a role crate (see [Roles](#roles)). They take one that every build links: required dependencies first, then those for a target, then optional ones, then dev-dependencies, and within each of these, this crate ahead of a role crate. A program whose dependencies do not fit the rule depends on this crate directly, at the tag its role crate pins, and the macros take it first. A build script's macros look in its build-dependencies instead. A new role crate needs no change here.
+`#[only]` and `#[exempt]` take one role each, and it must be one of the guard's roles. The guard knows a role by its name, as a client's operation does, so a program's roles need a name each, and a role crate linked twice is still one role. A misplaced marker is a compile error with the reason, such as `a message is either #[only(..)], sent through the sender's seat, or #[from_config], sent by the config`, and the attribute refuses a marker naming a role it does not list where `cargo check` sees it, and an `#[exempt(R)]` naming a role that refuses no program messages. [`tests/macros.rs`](tests/macros.rs) holds the derives against hand-written impls, and a handler under the attribute against its hand expansion, input by input, refusals included. The macros find this crate through a direct dependency on it, or on a role crate (see [Roles](#roles)). They take one that every build links: required dependencies first, then those for a target, then optional ones, then dev-dependencies, and within each of these, this crate ahead of a role crate. A program whose dependencies do not fit the rule depends on this crate directly, at the same tag as its role crate, and the macros take it first. A build script's macros look in its build-dependencies instead. A new role crate needs no change here.
 
 ## The slot
 
@@ -248,7 +248,7 @@ A PDA holder's grant comes with the call, so the handler, and every program it c
 - A check inside a handler arm, or one that depends on the message's data. The guard checks a message by its variant and by what the roles keep in their slots, so a conditional rule splits into an open variant and an `#[only(R)]` one. A role that watches state sees only the state of the actor the handler runs at, before and after it, never the message.
 - The root role's `Init` with the program's own settings. It writes the config's `Default` with the holder installed, so make the default a safe state and set the rest with `#[only(R)]` messages.
 - Private holders and private config accounts.
-- Client code beyond `Wire::op` and `own_actor`. The admin repo's runner is the reference client.
+- Client code beyond `Wire::op` and `own_actor`. The admin's sample runner, [`lez-admin-authority/sample/runner`](lez-admin-authority/sample/runner/), is the reference client.
 
 ## Versioning and stability
 
@@ -285,7 +285,9 @@ RISC0_DEV_MODE=1 cargo test --locked --manifest-path lez-admin-authority/sample/
 RISC0_DEV_MODE=1 cargo test --locked --manifest-path lez-freeze-authority/sample/methods/Cargo.toml --test overhead -- --nocapture
 ```
 
-CI runs the first block on pull requests and on main, and builds the runners and the guests weekly. Each sample's `sample/RUN.md` runs it on a local dev sequencer.
+CI runs the first block on pull requests and on main, and builds the runners and the guests weekly. On pull requests it also checks that the runners' and the guests' own locks are current and hold the root lock's risc0, the version LEZ pins for the sequencer. Each sample's `sample/RUN.md` runs it on a local dev sequencer.
+
+A change to a crate's version or dependencies changes those locks too. Refresh them with `cargo fetch --manifest-path <folder>/Cargo.toml`, which keeps the versions they lock and changes only what the change needs. Do not run `cargo update` on them. LEZ pins risc0-zkos-v1compat at 2.2.2. Of the risc0-zkvm versions LEZ allows, only 3.0.5 takes it, and 3.0.5 is yanked, so a new resolve fails. When a LEZ bump moves risc0 in those locks, the root lock follows with `cargo update -p risc0-zkvm --precise <version>`, and the same for risc0-zkos-v1compat.
 
 ## License
 

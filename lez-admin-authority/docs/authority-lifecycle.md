@@ -131,7 +131,7 @@ A PDA holds the admin role after accepting a nomination through its owning progr
 
 Grants travel on sync messages only, so a vault whose execute step is an async message cannot hold the admin. The handler acting for a PDA admin, and every program it calls, holds the admin's authority for that call, so make the admin a PDA that holds no assets and no other role.
 
-Both PDA paths, accept and act, are covered by host tests in both repos. They have not run on a sequencer yet: that needs a second program to play the owner.
+Both PDA paths, accept and act, are covered by the engine's and the admin's host tests. They have not run on a sequencer yet: that needs a second program to play the owner.
 
 ## Initialization window
 

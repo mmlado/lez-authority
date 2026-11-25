@@ -232,7 +232,7 @@ A refusal is a panic with a stable code: `lez-authority/admin E103: the signing 
 
 ## Overhead
 
-Measured from the sample's guest under the risc0 executor, per guest execution. [`docs/overhead.md`](docs/overhead.md) has the harness and every hop.
+Measured at v0.2.0 from the sample's guest under the risc0 executor, per guest execution. [`docs/overhead.md`](docs/overhead.md) has the harness and every hop.
 
 | Operation | Hops | Cycles |
 | --- | --- | ---: |

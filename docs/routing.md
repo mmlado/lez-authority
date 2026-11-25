@@ -221,7 +221,7 @@ hop 2    (C, P) config  the declared holder: { N, via: Some(G) }   else E103 / E
 
 A PDA holds the role only after an accept, because `Init` installs a top-level account. The holder's `via` is fixed at accept, so `G` and only `G` can act for `N`, and `N` could not act at top level even if it had a key (E120). Grants travel on sync messages only, so `G` must send the message by a sync call, not an async one. The grant comes with the call, so the handler, and every program it calls, holds `N`'s authority for that call. A program that received the grant cannot act for `N` here: it reaches `N`'s seat with itself as via (E120). Make `N` an account that holds no assets and no other role.
 
-Verified on host in both repos. Not yet run on a sequencer: it needs a second program to play `G`.
+Verified by the engine's and the admin's host tests. Not yet run on a sequencer: it needs a second program to play `G`.
 
 ## The client side
 
@@ -232,6 +232,6 @@ Verified on host in both repos. Not yet run on a sequencer: it needs a second pr
 | Actors | every `(account, program)` pair the transaction reaches, root included: the seat, the config, each target |
 | Signers | the sender of an operation or of a message that needs a holder. An open message needs no signer besides the fee payer |
 | Evidence | the config account's PDA evidence on its first write. A target that is a key account the wallet holds was admitted as a non-signing public account |
-| Fee | a fee declaration whose payer signs and has a nonce. The wallet runs the call first and declares the cycles it measured plus 25 percent, see the admin repo's overhead numbers. It does not send a call that reverts unless the client allows it, and such a call pays its whole gas limit |
+| Fee | a fee declaration whose payer signs and has a nonce. The wallet runs the call first and declares the cycles it measured plus 25 percent, see the admin's [overhead numbers](../lez-admin-authority/docs/overhead.md). It does not send a call that reverts unless the client allows it, and such a call pays its whole gas limit |
 
-The LEZ wallet library builds all of this from account mentions. The admin repo's runner is the reference client.
+The LEZ wallet library builds all of this from account mentions. The admin's sample runner, [`lez-admin-authority/sample/runner`](../lez-admin-authority/sample/runner/), is the reference client.

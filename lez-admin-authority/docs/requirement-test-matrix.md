@@ -29,7 +29,7 @@ Every hard requirement of [RFP-001](https://github.com/logos-co/rfp/blob/main/RF
 
 | # | Requirement | Satisfied by | Kind |
 | --- | --- | --- | --- |
-| S1 | CI green on the default branch | `.github/workflows/ci.yml` (fmt, clippy, tests, consumer check), `audit.yml`, `consumer-build.yml` (guests and the runner), in both repos | ci |
+| S1 | CI green on the default branch | `.github/workflows/ci.yml` (fmt, clippy, tests, consumer check), `audit.yml`, `consumer-build.yml` (guests and the runners), at the root of the repository | ci |
 | S2 | Every hard requirement has a test | this matrix | doc |
 | S3 | A README with dependency and integration steps | README, Adding as a dependency and Integration steps | doc |
 | S4 | A sample program that imports the library | `sample`, `sample-minimal`, `ci/consumer-fixture` | sample |
@@ -78,6 +78,6 @@ Behaviour with no v0.2 counterpart, because LEZ 0.4 routes messages between acto
 
 The runner's fourteen steps on a local dev sequencer, LEZ `v0.4.0-rc3`, `RISC0_DEV_MODE=1`, last run 2026-11-11: deploy, a stranger's `Init` refused, `Init`, the open setter, the admin setter, the target setter through the config, a stranger refused, nominate, the nominee refused before accepting, accept, the new admin's setter, the old admin refused, renounce, a call after renounce refused. Every read-back matched. The runner found each refusal's code in the wallet's simulation, then sent the call anyway, and the five refusals appeared in the sequencer log with their codes at the blocks that included them: E117 once, E103 three times, E102 once.
 
-Not yet run live: a PDA admin, which needs a second program. Covered on host in both repos.
+Not yet run live: a PDA admin, which needs a second program. Covered by the engine's and the admin's host tests.
 
 Every row above names at least one passing test. No known gaps.

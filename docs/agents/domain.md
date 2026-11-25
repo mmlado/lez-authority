@@ -32,7 +32,7 @@ If the concept you need isn't in the glossary yet, that's a signal: either you'r
 
 ## Name an ADR with its set
 
-Both ADR sets number from 0001, so every ADR reference names its set: `lez-authority ADR-0004` for `docs/adr/`, `lez-freeze-authority ADR-0003` for `lez-freeze-authority/docs/adr/`, and `v0.2 ADR-0013` for the SPEL-based v0.2 line.
+Both ADR sets number from 0001, as do those of the SPEL-based v0.2 line, so every ADR reference names its set: `lez-authority ADR-0004` for `docs/adr/`, `lez-freeze-authority ADR-0003` for `lez-freeze-authority/docs/adr/`, and for v0.2 the repository, such as `spel-freeze-authority ADR-0013`.
 
 ## Flag ADR conflicts
 

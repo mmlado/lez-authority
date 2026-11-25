@@ -2,8 +2,10 @@
 
 Cycle counts of the sample's guest, measured 2026-11-11 with `sample/methods/tests/overhead.rs`: each hop's `ReceiveInput` fed to the real `admin-sample.bin` under the risc0 executor, the way the sequencer runs it. LEZ at `v0.4.0-rc3`, lez-authority at `v0.2.0`, risc0 3.0.5, program binary 350,436 bytes.
 
+From the root of the repository:
+
 ```sh
-RISC0_DEV_MODE=1 cargo test --manifest-path sample/methods/Cargo.toml --test overhead -- --nocapture
+RISC0_DEV_MODE=1 cargo test --locked --manifest-path lez-admin-authority/sample/methods/Cargo.toml --test overhead -- --nocapture
 ```
 
 ## Per hop
