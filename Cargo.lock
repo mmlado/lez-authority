@@ -1737,9 +1737,9 @@ dependencies = [
 
 [[package]]
 name = "risc0-zkos-v1compat"
-version = "2.2.3"
+version = "2.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8b0b598ba7946354b10ca5c56e382de801e6c7fce9fccad0396ec436bc5072b"
+checksum = "8bd70cb45b5d37d025f25663b87c6b9dc9df7f413ee2068531a57f50b0eb95db"
 dependencies = [
  "include_bytes_aligned",
  "no_std_strings",
@@ -1773,9 +1773,9 @@ dependencies = [
 
 [[package]]
 name = "risc0-zkvm"
-version = "3.0.6"
+version = "3.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a5d4f24ec767f71a1663a4d24cf9d02b6bfee44c64647cae677227817051007a"
+checksum = "22b7eafb5d85be59cbd9da83f662cf47d834f1b836e14f675d1530b12c666867"
 dependencies = [
  "anyhow",
  "borsh",

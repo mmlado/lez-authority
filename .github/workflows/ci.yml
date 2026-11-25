@@ -21,6 +21,19 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Prefetch dependency sources
         run: cargo fetch --locked
+      # The runners and the guests resolve through locks of their own, which the root steps never read.
+      - name: Standalone locks are current
+        run: |
+          for m in lez-admin-authority/sample/runner lez-freeze-authority/sample/runner lez-admin-authority/sample/methods lez-freeze-authority/sample/methods; do
+            cargo fetch --locked --manifest-path "$m/Cargo.toml"
+          done
+      # Nothing in the root workspace pins risc0 as LEZ does, so only this keeps the guests on the sequencer's version.
+      - name: The guests link the sequencer's risc0
+        run: |
+          risc0() { grep -A1 -E '^name = "risc0-(zkvm|zkos-v1compat)"$' "$1"; }
+          for m in lez-admin-authority/sample/runner lez-freeze-authority/sample/runner lez-admin-authority/sample/methods lez-freeze-authority/sample/methods; do
+            diff <(risc0 Cargo.lock) <(risc0 "$m/Cargo.lock")
+          done
       - name: Formatting
         run: |
           cargo fmt --all --check
