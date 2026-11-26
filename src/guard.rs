@@ -38,7 +38,9 @@ pub const fn seed(label: &[u8]) -> PdaSeed {
 /// root role.
 ///
 /// - A library operation goes to the config through the sender's seat, and the guard runs it
-///   there under the role's policy. The root role's `Init` creates the config.
+///   there: `Accept` for the nominee alone, the other holder operations under the role's
+///   [`Policy`](policy::Policy), and one the role defines for itself through
+///   [`Hooks::operate`]. The root role's `Init` creates the config.
 /// - A message that needs a holder goes the same way. At the config the guard checks the
 ///   holder, asks [`Hooks::may_run`] of the role that refuses program messages, unless the
 ///   message is exempt from it, runs the handler, and refuses a result that changed a slot.
@@ -400,8 +402,9 @@ fn sends_library_message(response: &Response, actor: Actor) -> bool {
     wire::sent(response).any(|(to, message)| to == actor && message.first() == Some(&LIBRARY_TAG))
 }
 
-/// One management operation on `R`'s slot, and the sync messages the config sends with it: a
-/// holder operation under `R`'s policy, or one of `R`'s own.
+/// One management operation on `R`'s slot, and the sync messages the config sends with it:
+/// `Accept` for the nominee alone, another holder operation under `R`'s policy, or one of `R`'s
+/// own.
 pub(crate) fn run_op<R, C>(ctx: &Ctx, config: &mut C, op: Op) -> Result<Vec<SyncMessage>, Refusal>
 where
     R: Hooks<C>,

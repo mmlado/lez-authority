@@ -2,7 +2,8 @@
 //! holder and the operations that move it, and the table of refusal codes.
 //!
 //! A program takes these through `lez-authority`, which re-exports each under the same name.
-//! Who may run an operation on a slot is the role's policy, which lives above this crate.
+//! Who may install, nominate and renounce is the role's policy, which lives above this crate.
+//! Only the pending nominee may accept, which the slot checks itself.
 
 #![warn(missing_docs)]
 

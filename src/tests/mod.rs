@@ -246,9 +246,9 @@ const BARRED: AuthorityError = AuthorityError::Role {
     sentence: "the sender is barred",
 };
 
-// Its own operation sets the mark, and a zero mark stops program messages, as a freeze does.
 impl<C: HasSlot<Marking>> Policy<C> for Marking {}
 
+// Its own operation sets the mark, and a zero mark stops program messages, as a freeze does.
 impl<C: HasSlot<Marking>> Hooks<C> for Marking {
     const REFUSES_MESSAGES: bool = true;
 

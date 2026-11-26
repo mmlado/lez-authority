@@ -110,7 +110,7 @@ The attribute turns the handler into an inner function and puts `lez_authority::
 
 | Message | Where it runs |
 | --- | --- |
-| A role's operation: `Init`, `Nominate`, `Accept`, `Renounce`, or one the role defines for itself | sent to the sender's seat and forwarded. The guard runs it at the config under the role's policy, or through its hooks for one of its own, and the handler never sees it |
+| A role's operation: `Init`, `Nominate`, `Accept`, `Renounce`, or one the role defines for itself | sent to the sender's seat and forwarded. The guard runs it at the config: `Accept` for the nominee alone, the other three under the role's policy, and one of the role's own through its hooks. The handler never sees it |
 | One marked `#[only(R)]` | sent to the sender's seat and forwarded. At the config the guard checks `R`'s holder and the consent of the role that refuses program messages, unless the message is exempt from it, then the handler runs |
 | One marked `#[from_config]` | at another actor of the program, only when the config account sent it |
 | A role's own message, which only the role's consent or operation sends, built with `Ctx::own_message` | at the role's own actor for its key, only when the config account sent it. The guard hands it to the role's `Hooks::receive`, and the handler never sees it |
@@ -142,15 +142,17 @@ A role crate, one that defines roles for programs to use, is named `lez-<role>-a
 
 The engine stands in five layers, each naming only the layers below it ([lez-authority ADR-0008](docs/adr/0008-the-engine-stands-in-layers-that-import-downward.md)). From the bottom:
 
-| Layer | What it holds | Its v0.2 counterpart |
+| Layer | What it holds | Its counterpart on the SPEL line |
 | --- | --- | --- |
 | lez-authority-core, in [`core/`](core/) | a role, its slot and holder, the holder's four transitions, the init gate and the refusal codes | spel-authority, policy-free as this layer is |
 | [`wire`](src/wire.rs) | the library's messages and their encoding behind the byte 255 | the management instructions each role crate shipped, which SPEL merged into the program's dispatcher and IDL |
-| [`policy`](src/policy.rs) | `Policy`, `Ctx` and `Caller`, and the holder operations under a role's policy | each role crate's own rules on top of spel-authority, such as who may transfer the admin |
+| [`policy`](src/policy.rs) | `Policy`, `Ctx` and `Caller`, and the four holder operations | each role crate's own rules on top of spel-authority, such as who may transfer the admin |
 | [`hooks`](src/hooks.rs) | `Hooks`: a role's own operations and messages, its consent and its looks at state, with the rules the guard keeps around each | SPEL's extension mechanism ([logos-co/spel#257](https://github.com/logos-co/spel/pull/257)), through which spel-freeze-authority put its freeze check in front of the program's instructions |
 | [`guard`](src/guard.rs) | where each message runs, the hop, the dispatch of each operation and the checks on the way | SPEL's dispatch, with each role crate's gate in front of the handler body, such as `#[require_admin]`. The hop is new on LEZ 0.4 |
 
-The core is a crate of its own, so the compiler keeps it from naming anything above it. The other four are modules of lez-authority, and [`src/tests/layers.rs`](src/tests/layers.rs) fails on a module that names one above it, by a path, a glob of the crate root, a method a module above adds, or a doc link. A program sees one flat API, since lez-authority re-exports every item at its root.
+The SPEL line is spel-authority, spel-admin-authority and spel-freeze-authority at v0.2.0, on SPEL v0.7.0.
+
+The core is a crate of its own, so the compiler keeps it from naming anything above it. The other four are modules of lez-authority, and [`src/tests/layers.rs`](src/tests/layers.rs) fails on a module that names one above it, by a path, an alias or a glob of the crate root, a method or const a module above adds to one of its types, a trait a module above implements for one of them, a path in an attribute, or a doc link. It also fails on code it cannot read, such as an included file, a doc comment in a block, or an attribute on a module's declaration. A program sees one flat API, since lez-authority re-exports every item at its root.
 
 ## The macros
 

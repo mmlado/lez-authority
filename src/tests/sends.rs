@@ -576,17 +576,20 @@ fn only_at_own_actor<G: Roles<RootAndSending, Note>>() {
         own_actor::<First>(config_actor(), &MARKER_KEY),
     ];
     for receiver in elsewhere {
-        let own = at_actor::<G>(
-            receiver,
-            Some(config_actor()),
-            b"before",
-            own::<Sending, Note>(MARKER_KEY, vec![2]),
-        );
-        assert_eq!(
-            own.err(),
-            Some(Refusal::of::<Sending>(AuthorityError::NotOwnActor)),
-            "{guard}, at {receiver:?}"
-        );
+        // The role turns [0] away, which pins E141 ahead of its rules.
+        for message in [vec![2], vec![0]] {
+            let own = at_actor::<G>(
+                receiver,
+                Some(config_actor()),
+                b"before",
+                own::<Sending, Note>(MARKER_KEY, message),
+            );
+            assert_eq!(
+                own.err(),
+                Some(Refusal::of::<Sending>(AuthorityError::NotOwnActor)),
+                "{guard}, at {receiver:?}"
+            );
+        }
     }
 }
 

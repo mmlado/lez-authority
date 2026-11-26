@@ -76,7 +76,7 @@ An actor of the program that only one role writes, through its own messages: the
 _Avoid_: role account, role PDA
 
 **Management operation**:
-A library message the guard runs at the config, without the handler: install, nominate, accept and renounce on the role's slot, under the role's policy, and the operations a role defines for itself, such as a freeze, through its hooks.
+A library message the guard runs at the config, without the handler: install, nominate and renounce on the role's slot under the role's policy, accept by the nominee, and the operations a role defines for itself, such as a freeze, through its hooks.
 _Avoid_: admin instruction
 
 **Nomination**:

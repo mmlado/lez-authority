@@ -29,9 +29,9 @@ impl Role for Second {
     type Slot = AuthoritySlot;
 }
 
-// The messages below are exempt from it, so it declares that it refuses, with no rules yet.
 impl<C: HasSlot<Second>> Policy<C> for Second {}
 
+// The messages below are exempt from it, so it declares that it refuses, with no rules yet.
 impl<C: HasSlot<Second>> Hooks<C> for Second {
     const REFUSES_MESSAGES: bool = true;
 }

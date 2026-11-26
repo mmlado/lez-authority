@@ -16,7 +16,7 @@ lez-admin-authority and lez-freeze-authority live in this repository, beside lez
 #### Added
 
 - `lez-authority-core`, a crate of this workspace in `core/`, which holds what a role is, its slot and holder, the init gate and the refusal table, and depends on borsh and `lee_core` only. lez-authority re-exports each item under the name it had.
-- `AuthoritySlot::install`, `nominate`, `accept` and `renounce`, the holder's transitions, which check no caller. The guard calls each after the role's policy.
+- `AuthoritySlot::install`, `nominate`, `accept` and `renounce`, the holder's transitions. The guard calls install, nominate and renounce after the role's policy. It calls accept once the sender came through its seat, and the slot takes it from the pending nominee alone, with the seed proof for a PDA.
 - `Hooks<C>: Policy<C>`, the trait for what a role adds to the guard beside its policy.
 
 #### Changed
