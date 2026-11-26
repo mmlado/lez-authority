@@ -1,45 +1,19 @@
-//! The guard: where each message runs, and what is checked on the way.
+//! The guard: where each message runs, and what is checked on the way, over a program's
+//! roles.
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use lee_core::account::{AccountId, Actor};
-use lee_core::program::{PdaSeed, ReceiveInput, Response};
+use lee_core::program::{PdaSeed, ReceiveInput, Response, SyncMessage};
+use lez_authority_core::{AuthorityError, HasSlot, InitGate, Refusal, Role};
 
-use crate::wire::own_message_role;
-use crate::*;
+use crate::hooks::{self, Hooks};
+use crate::policy::{self, Caller, Ctx};
+use crate::wire::{self, Clearance, Forwarded, Gated, LIBRARY_TAG, LibraryMessage, Op, Wire};
 
 /// The config account of a program with this seed.
 #[must_use]
 pub fn config_account(program: AccountId, seed: &PdaSeed) -> AccountId {
     AccountId::for_public_pda(&program, seed)
-}
-
-/// The actor of role `R`'s own messages for `key`, in the program whose config actor is
-/// `config`: a PDA of the program, under a seed hashed from a fixed tag, the config's account,
-/// `key` and the role's name. Only `R`'s own messages for `key` run there, and a client lists it
-/// in a transaction that reaches it.
-#[must_use]
-pub fn own_actor<R: Role>(config: Actor, key: &[u8; 32]) -> Actor {
-    own_actor_and_seed(R::NAME, config, key).0
-}
-
-/// The actor of the own messages of the role named `role` for `key`, and the seed that derives it.
-pub(crate) fn own_actor_and_seed(role: &str, config: Actor, key: &[u8; 32]) -> (Actor, PdaSeed) {
-    use risc0_zkvm::sha::{Impl, Sha256 as _};
-    const TAG: &[u8] = b"lez-authority/own-actor/v1";
-    let mut bytes = Vec::with_capacity(TAG.len() + 64 + role.len());
-    bytes.extend_from_slice(TAG);
-    bytes.extend_from_slice(config.account_id.as_ref());
-    bytes.extend_from_slice(key);
-    // Last, so its length needs no prefix.
-    bytes.extend_from_slice(role.as_bytes());
-    let digest: [u8; 32] = Impl::hash_bytes(&bytes)
-        .as_bytes()
-        .try_into()
-        .expect("a sha256 digest is 32 bytes");
-    let seed = PdaSeed::new(digest);
-    let program = config.program_account_id;
-    let actor = Actor::new(AccountId::for_public_pda(&program, &seed), program);
-    (actor, seed)
 }
 
 /// A label padded with zeros to the 32 bytes a seed holds.
@@ -58,7 +32,7 @@ pub const fn seed(label: &[u8]) -> PdaSeed {
     PdaSeed::new(bytes)
 }
 
-/// Runs `handler` behind the guard. The [`guard`](macro@guard) attribute writes this call,
+/// Runs `handler` behind the guard. The [`guard`](macro@crate::guard) attribute writes this call,
 /// and a program may write it itself. `Rs` is the program's roles, `(A,)` or `(A, B)`, `C`
 /// the config the program keeps on the config account, and `gate` says who may install the
 /// root role.
@@ -74,8 +48,8 @@ pub const fn seed(label: &[u8]) -> PdaSeed {
 ///   adds the request to the handler's response, and the config answers it under that role's
 ///   rules in the same transaction.
 /// - A role's own message, which only the config sends, runs only at the role's own actor for
-///   its key, [`own_actor`], under that role's [`Hooks::receive`], over that actor's state, and
-///   never reaches the handler.
+///   its key, [`own_actor`](hooks::own_actor), under that role's [`Hooks::receive`], over that
+///   actor's state, and never reaches the handler.
 /// - Anything else runs where it was sent, as in a program without the guard. At the config
 ///   that needs an initialized config and the consent of the role that refuses program
 ///   messages, unless the message is exempt from it, and the slots are checked afterwards.
@@ -177,7 +151,7 @@ where
             return Err(refuse(AuthorityError::LibrarySend));
         }
         // An actor takes a role's own message from the config as the role's.
-        if sends_own_message(&response, program) {
+        if hooks::sends_own_message(&response, program) {
             return Err(refuse(AuthorityError::HandlerSendsOwnMessage));
         }
         if Rs::WATCHES_STATE {
@@ -237,17 +211,8 @@ where
             }
             let role =
                 Rs::index(&role).ok_or_else(|| refuse(AuthorityError::MessageDoesNotDecode))?;
-            let (name, prose) = Rs::names(role);
-            // A role's rules write only its own actors, never a seat or another role's.
-            if own_actor_and_seed(name, config_actor, &key).0 != input.receiver {
-                return Err(Refusal {
-                    role: name,
-                    prose,
-                    error: AuthorityError::NotOwnActor,
-                });
-            }
             let ctx = Ctx::without_caller(config_actor, gate);
-            let state = Rs::receive(&ctx, role, &input.pre_state, &message)?;
+            let state = Rs::receive(&ctx, role, &key, input.receiver, &input.pre_state, &message)?;
             Ok(state.map_or_else(Response::keep_state, Response::set_state))
         }
         Wire::Library(LibraryMessage::Forwarded(hop)) => {
@@ -430,28 +395,348 @@ fn seat(input: &ReceiveInput, config_actor: Actor) -> Result<Response, Authority
     Ok(Response::keep_state().send_sync(config_actor, &hop))
 }
 
-/// Every message `response` sends, sync and async, with its receiver.
-fn sent(response: &Response) -> impl Iterator<Item = (Actor, &[u8])> {
-    let sync = response
-        .sync_messages
-        .iter()
-        .map(|sent| (sent.to, sent.message.as_slice()));
-    sync.chain(
-        response
-            .async_messages
-            .iter()
-            .map(|sent| (sent.to, sent.message.as_slice())),
-    )
-}
-
 /// Whether `response` sends a library message to `actor`.
 fn sends_library_message(response: &Response, actor: Actor) -> bool {
-    sent(response).any(|(to, message)| to == actor && message.first() == Some(&LIBRARY_TAG))
+    wire::sent(response).any(|(to, message)| to == actor && message.first() == Some(&LIBRARY_TAG))
 }
 
-/// Whether `response` sends a role's own message to an actor of `program`.
-fn sends_own_message(response: &Response, program: AccountId) -> bool {
-    sent(response).any(|(to, message)| {
-        to.program_account_id == program && own_message_role(message).is_some()
-    })
+/// One management operation on `R`'s slot, and the sync messages the config sends with it: a
+/// holder operation under `R`'s policy, or one of `R`'s own.
+pub(crate) fn run_op<R, C>(ctx: &Ctx, config: &mut C, op: Op) -> Result<Vec<SyncMessage>, Refusal>
+where
+    R: Hooks<C>,
+    C: HasSlot<R>,
+{
+    match op {
+        Op::Init => policy::init::<R, C>(ctx, config)?,
+        Op::Nominate { next } => policy::nominate::<R, C>(ctx, config, next)?,
+        Op::Accept { pda_seed } => policy::accept::<R, C>(ctx, config, pda_seed)?,
+        Op::Renounce => policy::renounce::<R, C>(ctx, config)?,
+        Op::Own(op) => return hooks::operate::<R, C>(ctx, config, &op),
+    }
+    Ok(Vec::new())
+}
+
+/// The handler must leave every slot as it found it.
+fn unchanged<R, C>(after: &C, before: &C) -> Result<(), Refusal>
+where
+    R: Role,
+    C: HasSlot<R>,
+{
+    if HasSlot::<R>::slot(after) == HasSlot::<R>::slot(before) {
+        Ok(())
+    } else {
+        Err(Refusal::of::<R>(AuthorityError::SlotChanged))
+    }
+}
+
+/// Whether every name in `exempted` is the name of a role that refuses program messages.
+const fn exemptions_refuse(names: &[&str], refuses: &[bool], exempted: &[&str]) -> bool {
+    let mut e = 0;
+    while e < exempted.len() {
+        let mut n = 0;
+        while n < names.len() && !(refuses[n] && same(names[n], exempted[e])) {
+            n += 1;
+        }
+        if n == names.len() {
+            return false;
+        }
+        e += 1;
+    }
+    true
+}
+
+/// Whether every name in `marked` is one of `names`.
+pub(crate) const fn listed(names: &[&str], marked: &[&str]) -> bool {
+    let mut m = 0;
+    while m < marked.len() {
+        let mut n = 0;
+        while n < names.len() && !same(names[n], marked[m]) {
+            n += 1;
+        }
+        if n == names.len() {
+            return false;
+        }
+        m += 1;
+    }
+    true
+}
+
+const fn same(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < a.len() {
+        if a[i] != b[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+mod sealed {
+    pub trait Sealed {}
+    impl<A> Sealed for (A,) {}
+    impl<A, B> Sealed for (A, B) {}
+}
+
+/// A program's roles, as a tuple: one role, `(A,)`, or two, `(A, B)`. Each role has its own
+/// slot in the config, through [`HasSlot`], and its own [`Policy`](policy::Policy) and
+/// [`Hooks`]. The first role is the root: its install creates the config, and the guard's own
+/// refusals name it.
+pub trait Roles<C, M>: sealed::Sealed {
+    /// The root role's name.
+    const ROOT: &'static str;
+    /// The root role's prose name.
+    #[doc(hidden)]
+    const ROOT_PROSE: &'static str;
+    /// Whether the root role's holder is only ever appointed by nomination, which the guard
+    /// refuses at compile time.
+    #[doc(hidden)]
+    const ROOT_BY_NOMINATION_ONLY: bool;
+    /// Whether every role the message enum's markers name is one of these, which the guard
+    /// checks at compile time.
+    #[doc(hidden)]
+    const MARKS_LISTED: bool;
+    /// Whether the roles have a name each, which the guard checks at compile time.
+    #[doc(hidden)]
+    const NAMES_DISTINCT: bool;
+    /// Whether one role at most refuses program messages, which the guard checks at compile time.
+    #[doc(hidden)]
+    const AT_MOST_ONE_REFUSES: bool;
+    /// Whether every role an `#[exempt]` marker names refuses program messages, which the guard
+    /// checks at compile time.
+    #[doc(hidden)]
+    const EXEMPTIONS_REFUSE: bool;
+    /// Whether a role looks at the state around the handler.
+    #[doc(hidden)]
+    const WATCHES_STATE: bool;
+    /// The place in the tuple of the role with this name.
+    #[doc(hidden)]
+    fn index(name: &str) -> Option<usize>;
+    /// The name and the prose name of the role at `role`.
+    #[doc(hidden)]
+    fn names(role: usize) -> (&'static str, &'static str);
+    /// Runs an operation of the role at `role`, and returns the sync messages the config sends
+    /// with it.
+    #[doc(hidden)]
+    fn run_op(ctx: &Ctx, config: &mut C, role: usize, op: Op) -> Result<Vec<SyncMessage>, Refusal>;
+    /// Whether the message needs any role's holder.
+    #[doc(hidden)]
+    fn needs_any(message: &M) -> bool;
+    /// Checks the holders the message declares it needs.
+    #[doc(hidden)]
+    fn gate(ctx: &Ctx, config: &C, message: &M) -> Result<(), Refusal>;
+    /// Asks the role that refuses program messages, unless the message is exempt from it, whether
+    /// it may run, and returns the sync messages its consent comes with.
+    #[doc(hidden)]
+    fn may_run(ctx: &Ctx, config: &C, message: &M) -> Result<Vec<SyncMessage>, Refusal>;
+    /// Refuses a slot in `after` that differs from the same slot in `before`.
+    #[doc(hidden)]
+    fn unchanged(after: &C, before: &C) -> Result<(), Refusal>;
+    /// Whether a message handled away from the config asks it for clearance: a role refuses
+    /// program messages and the message is not exempt from it.
+    #[doc(hidden)]
+    fn needs_clearance(message: &M) -> bool;
+    /// The answer of the role that refuses program messages to a request for clearance, and the
+    /// sync messages it comes with.
+    #[doc(hidden)]
+    fn clear(ctx: &Ctx, config: &C) -> Result<Vec<SyncMessage>, Refusal>;
+    /// The role at `role`'s handling of its own message for `key` at the actor `at`, which must
+    /// be the role's own actor for `key`, and the actor's new state.
+    #[doc(hidden)]
+    fn receive(
+        ctx: &Ctx,
+        role: usize,
+        key: &[u8; 32],
+        at: Actor,
+        state: &[u8],
+        message: &[u8],
+    ) -> Result<Option<Vec<u8>>, Refusal>;
+    /// Asks each role that watches state whether the handler may run over this state.
+    #[doc(hidden)]
+    fn may_handle(ctx: &Ctx, state: &[u8]) -> Result<(), Refusal>;
+    /// Asks each role that watches state whether the handler's write may stand.
+    #[doc(hidden)]
+    fn may_write(ctx: &Ctx, before: &[u8], after: Option<&[u8]>) -> Result<(), Refusal>;
+}
+
+impl<C, M, A> Roles<C, M> for (A,)
+where
+    A: Hooks<C>,
+    C: HasSlot<A>,
+    M: Gated,
+{
+    const ROOT: &'static str = A::NAME;
+    const ROOT_PROSE: &'static str = A::PROSE_NAME;
+    const ROOT_BY_NOMINATION_ONLY: bool = A::BY_NOMINATION_ONLY;
+    const MARKS_LISTED: bool = listed(&[A::NAME], M::MARKED);
+    const NAMES_DISTINCT: bool = true;
+    const AT_MOST_ONE_REFUSES: bool = true;
+    const EXEMPTIONS_REFUSE: bool =
+        exemptions_refuse(&[A::NAME], &[A::REFUSES_MESSAGES], M::EXEMPTED);
+    const WATCHES_STATE: bool = A::WATCHES_STATE;
+
+    fn index(name: &str) -> Option<usize> {
+        (name == A::NAME).then_some(0)
+    }
+
+    fn names(_role: usize) -> (&'static str, &'static str) {
+        (A::NAME, A::PROSE_NAME)
+    }
+
+    fn run_op(
+        ctx: &Ctx,
+        config: &mut C,
+        _role: usize,
+        op: Op,
+    ) -> Result<Vec<SyncMessage>, Refusal> {
+        run_op::<A, C>(ctx, config, op)
+    }
+
+    fn needs_any(message: &M) -> bool {
+        message.needs::<A>()
+    }
+
+    fn gate(ctx: &Ctx, config: &C, message: &M) -> Result<(), Refusal> {
+        policy::gate::<A, C, M>(ctx, config, message)
+    }
+
+    fn may_run(ctx: &Ctx, config: &C, message: &M) -> Result<Vec<SyncMessage>, Refusal> {
+        hooks::may_run::<A, C, M>(ctx, config, message)
+    }
+
+    fn unchanged(after: &C, before: &C) -> Result<(), Refusal> {
+        unchanged::<A, C>(after, before)
+    }
+
+    fn needs_clearance(message: &M) -> bool {
+        hooks::asks::<A, C, M>(message)
+    }
+
+    fn clear(ctx: &Ctx, config: &C) -> Result<Vec<SyncMessage>, Refusal> {
+        hooks::clears::<A, C>(ctx, config)
+    }
+
+    fn receive(
+        ctx: &Ctx,
+        _role: usize,
+        key: &[u8; 32],
+        at: Actor,
+        state: &[u8],
+        message: &[u8],
+    ) -> Result<Option<Vec<u8>>, Refusal> {
+        hooks::receive::<A, C>(ctx, key, at, state, message)
+    }
+
+    fn may_handle(ctx: &Ctx, state: &[u8]) -> Result<(), Refusal> {
+        hooks::may_handle::<A, C>(ctx, state)
+    }
+
+    fn may_write(ctx: &Ctx, before: &[u8], after: Option<&[u8]>) -> Result<(), Refusal> {
+        hooks::may_write::<A, C>(ctx, before, after)
+    }
+}
+
+impl<C, M, A, B> Roles<C, M> for (A, B)
+where
+    A: Hooks<C>,
+    B: Hooks<C>,
+    C: HasSlot<A> + HasSlot<B>,
+    M: Gated,
+{
+    const ROOT: &'static str = A::NAME;
+    const ROOT_PROSE: &'static str = A::PROSE_NAME;
+    const ROOT_BY_NOMINATION_ONLY: bool = A::BY_NOMINATION_ONLY;
+    const MARKS_LISTED: bool = listed(&[A::NAME, B::NAME], M::MARKED);
+    const NAMES_DISTINCT: bool = !same(A::NAME, B::NAME);
+    const AT_MOST_ONE_REFUSES: bool = !(A::REFUSES_MESSAGES && B::REFUSES_MESSAGES);
+    const EXEMPTIONS_REFUSE: bool = exemptions_refuse(
+        &[A::NAME, B::NAME],
+        &[A::REFUSES_MESSAGES, B::REFUSES_MESSAGES],
+        M::EXEMPTED,
+    );
+    const WATCHES_STATE: bool = A::WATCHES_STATE || B::WATCHES_STATE;
+
+    fn index(name: &str) -> Option<usize> {
+        if name == A::NAME {
+            Some(0)
+        } else {
+            (name == B::NAME).then_some(1)
+        }
+    }
+
+    fn names(role: usize) -> (&'static str, &'static str) {
+        if role == 0 {
+            (A::NAME, A::PROSE_NAME)
+        } else {
+            (B::NAME, B::PROSE_NAME)
+        }
+    }
+
+    fn run_op(ctx: &Ctx, config: &mut C, role: usize, op: Op) -> Result<Vec<SyncMessage>, Refusal> {
+        if role == 0 {
+            run_op::<A, C>(ctx, config, op)
+        } else {
+            run_op::<B, C>(ctx, config, op)
+        }
+    }
+
+    fn needs_any(message: &M) -> bool {
+        message.needs::<A>() || message.needs::<B>()
+    }
+
+    fn gate(ctx: &Ctx, config: &C, message: &M) -> Result<(), Refusal> {
+        policy::gate::<A, C, M>(ctx, config, message)?;
+        policy::gate::<B, C, M>(ctx, config, message)
+    }
+
+    fn may_run(ctx: &Ctx, config: &C, message: &M) -> Result<Vec<SyncMessage>, Refusal> {
+        let mut sends = hooks::may_run::<A, C, M>(ctx, config, message)?;
+        sends.extend(hooks::may_run::<B, C, M>(ctx, config, message)?);
+        Ok(sends)
+    }
+
+    fn unchanged(after: &C, before: &C) -> Result<(), Refusal> {
+        unchanged::<A, C>(after, before)?;
+        unchanged::<B, C>(after, before)
+    }
+
+    fn needs_clearance(message: &M) -> bool {
+        hooks::asks::<A, C, M>(message) || hooks::asks::<B, C, M>(message)
+    }
+
+    fn clear(ctx: &Ctx, config: &C) -> Result<Vec<SyncMessage>, Refusal> {
+        let mut sends = hooks::clears::<A, C>(ctx, config)?;
+        sends.extend(hooks::clears::<B, C>(ctx, config)?);
+        Ok(sends)
+    }
+
+    fn receive(
+        ctx: &Ctx,
+        role: usize,
+        key: &[u8; 32],
+        at: Actor,
+        state: &[u8],
+        message: &[u8],
+    ) -> Result<Option<Vec<u8>>, Refusal> {
+        if role == 0 {
+            hooks::receive::<A, C>(ctx, key, at, state, message)
+        } else {
+            hooks::receive::<B, C>(ctx, key, at, state, message)
+        }
+    }
+
+    fn may_handle(ctx: &Ctx, state: &[u8]) -> Result<(), Refusal> {
+        hooks::may_handle::<A, C>(ctx, state)?;
+        hooks::may_handle::<B, C>(ctx, state)
+    }
+
+    fn may_write(ctx: &Ctx, before: &[u8], after: Option<&[u8]>) -> Result<(), Refusal> {
+        hooks::may_write::<A, C>(ctx, before, after)?;
+        hooks::may_write::<B, C>(ctx, before, after)
+    }
 }

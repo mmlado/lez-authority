@@ -5,9 +5,10 @@ use lee_core::account::{AccountId, Actor, ActorState};
 use lee_core::program::{AsyncMessage, PdaSeed, ReceiveInput, Response, SyncMessage};
 
 use super::*;
-use crate::roles::{listed, run_op};
+use crate::guard::{listed, run_op};
 
 mod clearance;
+mod layers;
 mod own_operations;
 mod refusing;
 mod role_slots;
