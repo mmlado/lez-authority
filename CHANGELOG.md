@@ -11,7 +11,25 @@ Up to 0.2.0 this file covers lez-authority only. From 0.3.0 it covers the three 
 
 lez-admin-authority and lez-freeze-authority live in this repository, beside lez-authority, and the three crates share one version and one tag ([lez-authority ADR-0007](docs/adr/0007-one-repository-at-one-version.md)).
 
+### lez-authority
+
+#### Added
+
+- `lez-authority-core`, a crate of this workspace in `core/`, which holds what a role is, its slot and holder, the init gate and the refusal table, and depends on borsh and `lee_core` only. lez-authority re-exports each item under the name it had.
+- `AuthoritySlot::install`, `nominate`, `accept` and `renounce`, the holder's transitions, which check no caller. The guard calls each after the role's policy.
+- `Hooks<C>: Policy<C>`, the trait for what a role adds to the guard beside its policy.
+
+#### Changed
+
+- The guard requires `Hooks<C>` of every role. A role that adds nothing to the guard implements it empty, as `impl<C: HasSlot<R>> Hooks<C> for R {}`.
+- `AuthoritySlot::check` takes the account and its via by reference, in place of a `Caller`.
+- The engine's code is four modules, `wire`, `policy`, `hooks` and `guard`, each naming only those below it, which a test checks ([lez-authority ADR-0008](docs/adr/0008-the-engine-stands-in-layers-that-import-downward.md)). Every item keeps its path at the crate root.
+
 ### lez-admin-authority
+
+#### Added
+
+- `Hooks`, re-exported beside `Policy`. `Admin` implements it empty.
 
 #### Changed
 

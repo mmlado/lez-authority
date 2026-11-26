@@ -23,10 +23,11 @@
 //! A program names its roles as a tuple, [`Roles`]: one role, `(A,)`, or two, `(A, B)`.
 //! Each keeps its own slot in the config. The first creates the config.
 //!
-//! This crate is policy-free. Which role a slot plays comes from the consumer through
+//! No role lives in this crate. Which role a slot plays comes from the consumer through
 //! [`Role`], who may install, nominate and renounce through [`Policy`], and what a role's own
 //! operations do and which program messages may run, over which state and with which writes,
-//! through [`Hooks`].
+//! through [`Hooks`]. The role, its slot and the refusal codes come from `lez-authority-core`,
+//! which this crate re-exports under the same names.
 
 #![warn(missing_docs)]
 

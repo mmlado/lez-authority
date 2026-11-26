@@ -1,8 +1,8 @@
 # Context map
 
-Three contexts share this repository, one for each crate. Each has its own glossary, and each role's builds on the engine's.
+Three contexts share this repository: the engine's, and one for each role. Each has its own glossary, and each role's builds on the engine's.
 
-- **The engine**, lez-authority: [`CONTEXT.md`](CONTEXT.md), with its decisions in [`docs/adr/`](docs/adr/). The slot, the hop to the config and the guard, with no notion of any one role.
+- **The engine**, lez-authority and lez-authority-core beneath it: [`CONTEXT.md`](CONTEXT.md), with its decisions in [`docs/adr/`](docs/adr/). The slot, the hop to the config and the guard, with no notion of any one role.
 - **The admin**, lez-admin-authority: [`lez-admin-authority/CONTEXT.md`](lez-admin-authority/CONTEXT.md). The admin role on top of the engine. It has no ADR set of its own, the decisions it rests on are in [`docs/adr/`](docs/adr/).
 - **The freeze**, lez-freeze-authority: [`lez-freeze-authority/CONTEXT.md`](lez-freeze-authority/CONTEXT.md), with its decisions in [`lez-freeze-authority/docs/adr/`](lez-freeze-authority/docs/adr/). The freeze role, which answers to the admin and uses both glossaries.
 

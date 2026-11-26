@@ -181,24 +181,7 @@ impl From<FreezeError> for AuthorityError {
 /// The freeze authority answers to the admin. Either of them nominates and renounces, and a
 /// renounce leaves the slot unset for the admin to fill again. Once the admin is renounced,
 /// nobody can nominate where the slot has no holder, so an emptied slot stays empty. An offer
-/// standing at that moment can still be accepted, and nobody can withdraw it. Only the freeze
-/// authority freezes and releases, the program or one account, and a freeze operation that would
-/// change nothing is refused.
-///
-/// While the program is frozen, every program message is refused (E217), but for one marked
-/// `#[exempt(Freeze)]`: at the config, and at the program's other actors through their request
-/// for clearance, so a refused message there changes nothing. A program message whose caller is
-/// a frozen account is refused the same way (E218), after the check for a frozen program, so a
-/// frozen program answers E217 first. The config asks the caller's marker, [`marker_actor`],
-/// which refuses in the same transaction while it holds the mark. At the config that comes after
-/// the handler, so a handler that fails first is refused with its own error. A message without a
-/// caller, such as one sent straight to the config or a credit at the actor of a recipient that
-/// did not sign the transaction, asks no marker. It is refused while the program is frozen
-/// (E217), and otherwise only at a marker or for a write of the mark, as below.
-///
-/// No program message runs at a marker while it holds the mark (E227), not even an exempt one,
-/// and no handler writes a state that starts with the mark at any actor (E228). So only the
-/// freeze authority marks an account.
+/// standing at that moment can still be accepted, and nobody can withdraw it.
 impl<C> Policy<C> for Freeze
 where
     C: HasSlot<Freeze> + HasSlot<Admin>,
@@ -218,6 +201,23 @@ where
     }
 }
 
+/// Only the freeze authority freezes and releases, the program or one account, and a freeze
+/// operation that would change nothing is refused.
+///
+/// While the program is frozen, every program message is refused (E217), but for one marked
+/// `#[exempt(Freeze)]`: at the config, and at the program's other actors through their request
+/// for clearance, so a refused message there changes nothing. A program message whose caller is
+/// a frozen account is refused the same way (E218), after the check for a frozen program, so a
+/// frozen program answers E217 first. The config asks the caller's marker, [`marker_actor`],
+/// which refuses in the same transaction while it holds the mark. At the config that comes after
+/// the handler, so a handler that fails first is refused with its own error. A message without a
+/// caller, such as one sent straight to the config or a credit at the actor of a recipient that
+/// did not sign the transaction, asks no marker. It is refused while the program is frozen
+/// (E217), and otherwise only at a marker or for a write of the mark, as below.
+///
+/// No program message runs at a marker while it holds the mark (E227), not even an exempt one,
+/// and no handler writes a state that starts with the mark at any actor (E228). So only the
+/// freeze authority marks an account.
 impl<C> Hooks<C> for Freeze
 where
     C: HasSlot<Freeze> + HasSlot<Admin>,

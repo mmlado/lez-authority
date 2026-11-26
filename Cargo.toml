@@ -3,7 +3,7 @@ name = "lez-authority"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Authority primitives for LEZ actor programs: the holder slot, the vouched caller, and the routing between a sender's own actor and the program's config actor"
+description = "Authority primitives for LEZ actor programs: the guard, the hop from a sender's own actor to the config actor, and each role's policy and hooks"
 repository.workspace = true
 readme = "README.md"
 

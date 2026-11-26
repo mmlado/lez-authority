@@ -34,6 +34,8 @@ impl Role for Admin {
 /// The admin answers to nobody: the deployer or the genesis key installs it, the holder
 /// nominates and renounces, and renounce is for good.
 impl<C: HasSlot<Admin>> Policy<C> for Admin {}
+
+/// The admin adds nothing to the guard beside its policy.
 impl<C: HasSlot<Admin>> Hooks<C> for Admin {}
 
 /// A client's message for one of the admin operations, to send to the sender's own actor.

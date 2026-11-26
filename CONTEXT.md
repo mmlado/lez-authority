@@ -1,6 +1,6 @@
 # lez-authority
 
-Authority primitives for LEZ actor programs: a slot per role inside a program's config, the hop that carries a sender's authority from their own actor to the config, and the guard in front of a program's plain handler. Policy-free: it does not know what an admin is.
+Authority primitives for LEZ actor programs: a slot per role inside a program's config, the hop that carries a sender's authority from their own actor to the config, and the guard in front of a program's plain handler. It does not know what an admin is.
 
 ## Language
 
@@ -44,7 +44,7 @@ The first of a program's roles. Its install creates the config, and the guard's 
 _Avoid_: main role, primary role
 
 **Policy**:
-A role's rules: who may install its first holder, who may nominate, who may renounce, what renounce leaves, what the operations and the own messages it defines for itself do, and whether a program message may run, over which state and with which write. A consent and an operation may come with sync messages, which the config sends. A role that answers to nobody keeps the defaults. A role that answers to another, as a freeze authority answers to the admin, reads that role's slot.
+A role's rules on its holder: who may install its first holder, who may nominate, who may renounce, and what renounce leaves. A role that answers to nobody keeps the defaults. A role that answers to another, as a freeze authority answers to the admin, reads that role's slot.
 _Avoid_: permissions, access rules
 
 **Guard**:
@@ -52,7 +52,7 @@ What runs in front of a program's handler: it forwards at seats, unwraps hops at
 _Avoid_: dispatcher, framework, runtime
 
 **Hook**:
-A point in the guard where a role's policy adds to what the guard does, with the guard's own rules kept around it. A consent that comes with sync messages is one, an operation that does is another, a role's own message handled at the role's own actor is a third, and a look at the state before and after the plain handler is a fourth.
+A point in the guard where a role adds to what the guard does beside its policy, with the guard's own rules kept around it. A role's consent to a program message is one, an operation the role defines for itself is another, a role's own message handled at the role's own actor is a third, and a look at the state before and after the plain handler is a fourth. A consent and an operation may come with sync messages, which the config sends. A role that adds nothing to the guard, such as the admin, uses none.
 _Avoid_: plugin, middleware, interceptor
 
 **Plain handler**:
@@ -60,7 +60,7 @@ A LEZ program's own handler, taking the receive input and the program's message 
 _Avoid_: callback, hook
 
 **Context**:
-What a role's policy sees: the caller, if any, the config's actor, and the program's init gate. The handler never sees it.
+What a role's policy and hooks see: the caller, if any, the config's actor, and the program's init gate. The handler never sees it.
 _Avoid_: ctx in prose, session
 
 **Library message**:
@@ -76,7 +76,7 @@ An actor of the program that only one role writes, through its own messages: the
 _Avoid_: role account, role PDA
 
 **Management operation**:
-A library message the guard runs at the config under its role's policy, without the handler: install, nominate, accept and renounce on the role's slot, and the operations a role defines for itself, such as a freeze.
+A library message the guard runs at the config, without the handler: install, nominate, accept and renounce on the role's slot, under the role's policy, and the operations a role defines for itself, such as a freeze, through its hooks.
 _Avoid_: admin instruction
 
 **Nomination**:
