@@ -1,8 +1,9 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use lee_core::account::{AccountId, Actor, ActorState};
-use lee_core::program::{AsyncMessage, PdaSeed, ReceiveInput, Response, SyncMessage};
+use lee_core::program::{AsyncMessage, PdaSeed, ReceiveInput, Response, SyncMessage, Transition};
+use lez_authority_world::{Failure, Transaction, World};
 
 use super::*;
 use crate::guard::{listed, run_op};
@@ -101,29 +102,26 @@ impl HasSlot<Second> for Two {
     }
 }
 
-#[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
+#[derive(Clone, Debug, BorshSerialize, BorshDeserialize, Gated)]
 enum Msg {
     SetValue(u64),
+    #[only(Second)]
     GatedValue(u64),
     ClearSecond,
+    #[only(Second)]
     ToTarget(AccountId),
+    #[only(Second)]
     ToElsewhere(AccountId),
+    #[from_config]
     Mark,
-    Pass { to: AccountId, bytes: Vec<u8> },
-    PassAsync { to: AccountId, bytes: Vec<u8> },
-}
-
-impl Gated for Msg {
-    fn needs<R: Role>(&self) -> bool {
-        matches!(
-            self,
-            Msg::GatedValue(_) | Msg::ToTarget(_) | Msg::ToElsewhere(_)
-        ) && std::any::TypeId::of::<R>() == std::any::TypeId::of::<Second>()
-    }
-
-    fn only_from_config(&self) -> bool {
-        matches!(self, Msg::Mark)
-    }
+    Pass {
+        to: AccountId,
+        bytes: Vec<u8>,
+    },
+    PassAsync {
+        to: AccountId,
+        bytes: Vec<u8>,
+    },
 }
 
 /// A plain LEZ handler: the config where it runs, its own state anywhere else.
@@ -179,21 +177,155 @@ fn config_actor() -> Actor {
     Actor::new(config_account(PROGRAM, &SEED), PROGRAM)
 }
 
-fn at(
-    receiver: Actor,
-    from: Option<Actor>,
-    authorized: bool,
-    pre: Option<&Two>,
-    message: Wire<Msg>,
-) -> Result<Response, Refusal> {
-    let input = ReceiveInput {
-        receiver,
-        from,
-        is_authorized: authorized,
-        pre_state: ActorState::from(pre.map(|c| borsh::to_vec(c).unwrap()).unwrap_or_default()),
-        message: borsh::to_vec(&message).unwrap(),
+/// Every actor's state between transactions.
+type States = BTreeMap<Actor, Vec<u8>>;
+
+/// What starts a message that asks another program to send bytes on.
+const SEND_ON: [u8; 8] = *b"send on:";
+
+/// A message for another program: send `bytes` on to `to`.
+fn sent_on(to: Actor, bytes: &[u8]) -> Vec<u8> {
+    borsh::to_vec(&(SEND_ON, to, bytes)).unwrap()
+}
+
+/// Any other program. It sends bytes on when its message asks it to, and otherwise does
+/// nothing.
+fn other_program(input: &ReceiveInput) -> Result<Response, Refusal> {
+    let mut response = Response::keep_state();
+    if let Ok((SEND_ON, to, bytes)) = borsh::from_slice::<([u8; 8], Actor, Vec<u8>)>(&input.message)
+    {
+        response.sync_messages.push(SyncMessage {
+            to,
+            message: bytes,
+            pda_seeds: BTreeSet::new(),
+        });
+    }
+    Ok(response)
+}
+
+/// One transaction over `pre` in a world whose program is the guard of `Rs` around `handler`:
+/// `message` at `root`, signed by `signers`, reaching `reached` beside the config, the actors
+/// that hold state and each signer's seat. It vouches for the accounts of `root`, the config and
+/// `reached`. Every delivery, or the refusal that refuses all of it.
+fn deliver<Rs, C, M>(
+    pre: &States,
+    root: Actor,
+    signers: &[AccountId],
+    message: Vec<u8>,
+    reached: &[Actor],
+    handler: fn(&ReceiveInput, M) -> Response,
+) -> Result<Vec<Transition>, Refusal>
+where
+    Rs: Roles<C, M> + 'static,
+    C: BorshSerialize + BorshDeserialize + Default + 'static,
+    M: Gated + BorshSerialize + BorshDeserialize + 'static,
+{
+    let guarded = move |input: &ReceiveInput| {
+        let wire: Wire<M> = borsh::from_slice(&input.message).unwrap();
+        try_guard::<Rs, C, M>(input, &SEED, InitGate::Deployer, wire, handler)
     };
-    try_guard::<(First, Second), Two, Msg>(&input, &SEED, InitGate::Deployer, message, handle)
+    let mut world = World::new().program(PROGRAM, guarded);
+    for other in [ELSEWHERE, GOVERNANCE] {
+        world = world.program(other, other_program);
+    }
+    for (&actor, state) in pre {
+        world = world.starting_with(actor, state.clone());
+    }
+    let mut actors = vec![root, config_actor()];
+    actors.extend(pre.keys());
+    actors.extend(reached);
+    actors.extend(signers.iter().copied().map(seat_of));
+    let mut evidence = vec![root.account_id, config_actor().account_id];
+    evidence.extend(reached.iter().map(|actor| actor.account_id));
+    let transaction = Transaction {
+        to: root,
+        message,
+        actors,
+        signers: signers.to_vec(),
+        evidence,
+    };
+    match world.transact(transaction) {
+        Ok(outcome) => Ok(outcome.trace),
+        Err(Failure::Refused(refusal)) => Err(refusal),
+        Err(Failure::Executor(error)) => panic!("the executor refused the transaction: {error}"),
+        Err(Failure::UnknownProgram(id)) => panic!("the world holds no program {id}"),
+    }
+}
+
+/// The states of a program whose config is `config`, or of one with none.
+fn states<C: BorshSerialize>(config: Option<&C>) -> States {
+    config
+        .map(|config| (config_actor(), borsh::to_vec(config).unwrap()))
+        .into_iter()
+        .collect()
+}
+
+/// [`deliver`] with `message` encoded, over the config `pre` holds, or none.
+fn run_with<Rs, C, M>(
+    pre: Option<&C>,
+    root: Actor,
+    signers: &[AccountId],
+    message: Wire<M>,
+    reached: &[Actor],
+    handler: fn(&ReceiveInput, M) -> Response,
+) -> Result<Vec<Transition>, Refusal>
+where
+    Rs: Roles<C, M> + 'static,
+    C: BorshSerialize + BorshDeserialize + Default + 'static,
+    M: Gated + BorshSerialize + BorshDeserialize + 'static,
+{
+    let message = borsh::to_vec(&message).unwrap();
+    deliver::<Rs, C, M>(&states(pre), root, signers, message, reached, handler)
+}
+
+/// The first delivery at `actor` in `trace`.
+fn step_at(trace: &[Transition], actor: Actor) -> &Transition {
+    let step = trace.iter().find(|step| step.input.receiver == actor);
+    step.expect("the transaction reached the actor")
+}
+
+/// What the guard returned at `actor`, the first time `trace` reached it.
+fn response_at(trace: &[Transition], actor: Actor) -> Response {
+    step_at(trace, actor).response.clone()
+}
+
+/// The actors `message` makes the handler send to, which its transaction must list.
+fn named(message: &Wire<Msg>) -> Vec<Actor> {
+    match message {
+        Wire::Program(Msg::ToTarget(target) | Msg::Pass { to: target, .. }) => {
+            vec![Actor::new(*target, PROGRAM)]
+        }
+        Wire::Program(Msg::ToElsewhere(target)) => vec![Actor::new(*target, ELSEWHERE)],
+        _ => Vec::new(),
+    }
+}
+
+/// [`deliver`] for the roles `(First, Second)`, with `message` as bytes.
+fn run_bytes(
+    pre: Option<&Two>,
+    root: Actor,
+    signers: &[AccountId],
+    message: Vec<u8>,
+    reached: &[Actor],
+) -> Result<Vec<Transition>, Refusal> {
+    deliver::<(First, Second), Two, Msg>(&states(pre), root, signers, message, reached, handle)
+}
+
+/// `message` at `root`, signed by `signers`, over the config `pre` holds, or none.
+fn run(
+    pre: Option<&Two>,
+    root: Actor,
+    signers: &[AccountId],
+    message: Wire<Msg>,
+) -> Result<Vec<Transition>, Refusal> {
+    let reached = named(&message);
+    run_bytes(
+        pre,
+        root,
+        signers,
+        borsh::to_vec(&message).unwrap(),
+        &reached,
+    )
 }
 
 /// From `sender`'s seat to the config. What the config answered.
@@ -202,10 +334,10 @@ fn through_seat(
     pre: Option<&Two>,
     message: Wire<Msg>,
 ) -> Result<Response, Refusal> {
-    let hop = at(seat_of(sender), None, true, None, message)?;
+    let trace = run(pre, seat_of(sender), &[sender], message)?;
+    let hop = response_at(&trace, seat_of(sender));
     assert!(hop.post_state.is_none(), "the seat only forwards");
-    let hop: Wire<Msg> = borsh::from_slice(&hop.sync_messages[0].message).unwrap();
-    at(config_actor(), Some(seat_of(sender)), false, pre, hop)
+    Ok(response_at(&trace, config_actor()))
 }
 
 /// The config as written back.
@@ -314,25 +446,19 @@ fn marked(authority_slot: AuthoritySlot) -> WithMark {
     })
 }
 
-/// Runs `handler` at the config, with `pre` as the config's state.
+/// `SetMark(mark)` sent straight to the config `pre` of a program with the roles `Rs` around
+/// `handler`.
 fn at_config_with<Rs, C>(
     pre: &C,
     mark: u64,
     handler: fn(&ReceiveInput, SetMark) -> Response,
 ) -> Option<Refusal>
 where
-    Rs: Roles<C, SetMark>,
-    C: BorshSerialize + BorshDeserialize + Default,
+    Rs: Roles<C, SetMark> + 'static,
+    C: BorshSerialize + BorshDeserialize + Default + 'static,
 {
     let message = Wire::Program(SetMark(mark));
-    let input = ReceiveInput {
-        receiver: config_actor(),
-        from: None,
-        is_authorized: false,
-        pre_state: ActorState::from(borsh::to_vec(pre).unwrap()),
-        message: borsh::to_vec(&message).unwrap(),
-    };
-    try_guard::<Rs, C, SetMark>(&input, &SEED, InitGate::Deployer, message, handler).err()
+    run_with::<Rs, C, SetMark>(Some(pre), config_actor(), &[], message, &[], handler).err()
 }
 
 /// The freeze's shape: a root role that keeps only its holder, and a second that keeps more.
@@ -370,7 +496,8 @@ fn keep<M>(_input: &ReceiveInput, _message: M) -> Response {
     Response::keep_state()
 }
 
-/// Runs `message` at `receiver` of a program with the roles `Rs` and the config `C`.
+/// The guard at `receiver` of a program with the roles `Rs` and the config `C`, for an input
+/// no transaction carries.
 fn at_with<Rs, C, M>(
     receiver: Actor,
     from: Option<Actor>,
@@ -394,31 +521,6 @@ where
     try_guard::<Rs, C, M>(&input, &SEED, InitGate::Deployer, message, handler)
 }
 
-/// Runs `message` at `receiver` of a program with the roles `(First, Marking)`.
-fn at_marked_with<M>(
-    receiver: Actor,
-    from: Option<Actor>,
-    authorized: bool,
-    pre: Option<&RootAndMark>,
-    message: Wire<M>,
-    handler: fn(&ReceiveInput, M) -> Response,
-) -> Result<Response, Refusal>
-where
-    M: Gated + BorshSerialize + BorshDeserialize,
-{
-    at_with::<(First, Marking), RootAndMark, M>(receiver, from, authorized, pre, message, handler)
-}
-
-fn at_marked(
-    receiver: Actor,
-    from: Option<Actor>,
-    authorized: bool,
-    pre: Option<&RootAndMark>,
-    message: Wire<SetMark>,
-) -> Result<Response, Refusal> {
-    at_marked_with(receiver, from, authorized, pre, message, keep)
-}
-
 /// From `sender`'s seat to the config of a program with the roles `(First, Marking)`. The
 /// config as written back.
 fn send_marked(
@@ -426,9 +528,9 @@ fn send_marked(
     pre: Option<&RootAndMark>,
     message: Wire<SetMark>,
 ) -> Result<RootAndMark, Refusal> {
-    let hop = at_marked(seat_of(sender), None, true, None, message)?;
-    let hop: Wire<SetMark> = borsh::from_slice(&hop.sync_messages[0].message).unwrap();
-    let response = at_marked(config_actor(), Some(seat_of(sender)), false, pre, hop)?;
+    let seat = seat_of(sender);
+    let trace = run_with::<(First, Marking), _, _>(pre, seat, &[sender], message, &[], keep)?;
+    let response = response_at(&trace, config_actor());
     Ok(borsh::from_slice(response.post_state.as_ref().unwrap()).unwrap())
 }
 
@@ -449,37 +551,33 @@ fn root_and_mark() -> RootAndMark {
 
 /// A program message for `(First, Marking)`: open or needing the first role's holder, and
 /// exempt from the marking role's rules or not.
-#[derive(BorshSerialize, BorshDeserialize)]
+#[derive(BorshSerialize, BorshDeserialize, Gated)]
 enum Halt {
     Open,
+    #[only(First)]
     Gated,
+    #[exempt(Marking)]
     Exempt,
+    #[only(First)]
+    #[exempt(Marking)]
     GatedExempt,
+    #[exempt(Marking)]
     ExemptTouch,
+    #[from_config]
     FromConfig,
+    #[from_config]
+    #[exempt(Marking)]
     FromConfigExempt,
     WriteAndSend,
+    #[exempt(Marking)]
+    Pass {
+        to: Actor,
+        bytes: Vec<u8>,
+    },
 }
 
-impl Gated for Halt {
-    fn needs<R: Role>(&self) -> bool {
-        matches!(self, Halt::Gated | Halt::GatedExempt)
-            && std::any::TypeId::of::<R>() == std::any::TypeId::of::<First>()
-    }
-
-    fn only_from_config(&self) -> bool {
-        matches!(self, Halt::FromConfig | Halt::FromConfigExempt)
-    }
-
-    fn exempt<R: Role>(&self) -> bool {
-        matches!(
-            self,
-            Halt::Exempt | Halt::GatedExempt | Halt::ExemptTouch | Halt::FromConfigExempt
-        ) && std::any::TypeId::of::<R>() == std::any::TypeId::of::<Marking>()
-    }
-}
-
-/// Keeps the config, but for `ExemptTouch`, which moves the marking role's mark.
+/// Keeps the config, but for `ExemptTouch`, which moves the marking role's mark. `Pass` sends
+/// its bytes on, so a test chooses the sender of a message.
 fn halt(input: &ReceiveInput, message: Halt) -> Response {
     if let Halt::ExemptTouch = message {
         let mut config: RootAndMark = borsh::from_slice(&input.pre_state).unwrap();
@@ -488,6 +586,15 @@ fn halt(input: &ReceiveInput, message: Halt) -> Response {
     }
     if let Halt::WriteAndSend = message {
         return Response::set_state(vec![7]).send_sync(seat_of(OTHER), &Wire::Program(Halt::Open));
+    }
+    if let Halt::Pass { to, bytes } = message {
+        let mut response = Response::keep_state();
+        response.sync_messages.push(SyncMessage {
+            to,
+            message: bytes,
+            pda_seeds: BTreeSet::new(),
+        });
+        return response;
     }
     Response::keep_state()
 }
@@ -574,6 +681,7 @@ enum Ask {
     GatedMarking,
 }
 
+// By hand: it exempts a role that refuses nothing, which the derive rejects.
 impl Gated for Ask {
     fn needs<R: Role>(&self) -> bool {
         matches!(self, Ask::GatedMarking)

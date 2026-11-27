@@ -286,6 +286,8 @@ cargo test --workspace --locked
 cargo check --locked --manifest-path lez-admin-authority/ci/consumer-fixture/guest/Cargo.toml
 ```
 
+The engine's and the freeze's tests run programs in a world, lez-authority-world in [`world/`](world/), which hands each transaction to LEZ's own executor ([lez-authority ADR-0009](docs/adr/0009-tests-run-programs-through-lez-s-own-executor.md)). It is test support and outside the versioning promise, so the samples do not depend on it and deliver their messages themselves.
+
 Each sample's runner is a workspace of its own, since it links the LEZ wallet stack, which needs `libpcsclite-dev` and is slow. A runner needs `r0vm` on its `PATH` when it runs, because the wallet runs each call through it before sending:
 
 ```bash

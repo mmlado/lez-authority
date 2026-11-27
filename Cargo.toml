@@ -11,6 +11,7 @@ readme = "README.md"
 members = [
     "core",
     "macros",
+    "world",
     "fixtures/lez-sample-authority",
     "fixtures/by-name",
     "fixtures/renamed",
@@ -38,6 +39,7 @@ borsh = { version = "1", features = ["derive"] }
 lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone", tag = "v0.4.0-rc3" }
 lez-authority = { path = "." }
 lez-authority-core = { path = "core" }
+lez-authority-world = { path = "world" }
 lez-admin-authority = { path = "lez-admin-authority/lez-admin-authority" }
 lez-freeze-authority = { path = "lez-freeze-authority/lez-freeze-authority" }
 # Only fixtures/inherited uses it, to check a role crate renamed in the workspace root.
@@ -50,3 +52,6 @@ lez-authority-core.workspace = true
 lez-authority-macros = { path = "macros" }
 # The sha256 lee_core hashes PDAs with, which a risc0 guest runs accelerated.
 risc0-zkvm = { version = "3.0.5", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+lez-authority-world.workspace = true

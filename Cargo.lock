@@ -1210,6 +1210,7 @@ dependencies = [
  "lee_core",
  "lez-authority-core",
  "lez-authority-macros",
+ "lez-authority-world",
  "risc0-zkvm",
 ]
 
@@ -1232,12 +1233,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "lez-authority-world"
+version = "0.2.0"
+dependencies = [
+ "borsh",
+ "lee_core",
+]
+
+[[package]]
 name = "lez-freeze-authority"
 version = "0.2.0"
 dependencies = [
  "borsh",
  "lee_core",
  "lez-admin-authority",
+ "lez-authority-world",
 ]
 
 [[package]]

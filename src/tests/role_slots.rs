@@ -190,15 +190,8 @@ fn a_role_appointed_only_by_nomination_may_be_the_second_role() {
 #[test]
 fn a_one_role_guard_names_its_root_in_prose() {
     let op = Wire::<SetMark>::op::<First>(Op::Renounce);
-    let input = ReceiveInput {
-        receiver: config_actor(),
-        from: None,
-        is_authorized: false,
-        pre_state: ActorState::from(Vec::new()),
-        message: borsh::to_vec(&op).unwrap(),
-    };
     let refused =
-        try_guard::<(First,), RootAndMark, SetMark>(&input, &SEED, InitGate::Deployer, op, keep)
+        run_with::<(First,), RootAndMark, SetMark>(None, config_actor(), &[], op, &[], keep)
             .err()
             .unwrap();
     assert_eq!(
@@ -214,18 +207,12 @@ fn a_one_role_guard_names_its_root_in_prose() {
 #[test]
 fn an_operation_of_the_second_role_sent_straight_to_the_config_names_that_role() {
     let op = Wire::<SetMark>::op::<Deputy>(Op::Nominate { next: KEY });
-    let input = ReceiveInput {
-        receiver: config_actor(),
-        from: None,
-        is_authorized: false,
-        pre_state: ActorState::from(borsh::to_vec(&FirstAndDeputy::default()).unwrap()),
-        message: borsh::to_vec(&op).unwrap(),
-    };
-    let refused = try_guard::<(First, Deputy), FirstAndDeputy, SetMark>(
-        &input,
-        &SEED,
-        InitGate::Deployer,
+    let refused = run_with::<(First, Deputy), FirstAndDeputy, SetMark>(
+        Some(&FirstAndDeputy::default()),
+        config_actor(),
+        &[],
         op,
+        &[],
         keep,
     )
     .err();

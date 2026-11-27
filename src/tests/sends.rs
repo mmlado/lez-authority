@@ -42,6 +42,8 @@ const OWN_TO_SEAT: u64 = 15;
 /// Under these the role sends a library message, and a program message, to another program.
 const LIBRARY_ELSEWHERE: u64 = 7;
 const PROGRAM_ELSEWHERE: u64 = 8;
+/// From this mark on it sends one of `own_sends`.
+const OWN_SENDS_FROM: u64 = 100;
 
 const WITNESS_SEED: PdaSeed = seed(b"sending/witness");
 
@@ -105,6 +107,38 @@ fn own_to_seat() -> SyncMessage {
     sent
 }
 
+/// The role's own actor for `SECOND_KEY`, and the first role's for `MARKER_KEY`.
+fn second_marker() -> Actor {
+    own_actor::<Sending>(config_actor(), &SECOND_KEY)
+}
+
+fn first_s_marker() -> Actor {
+    own_actor::<First>(config_actor(), &MARKER_KEY)
+}
+
+/// The own messages the role sends from `OWN_SENDS_FROM` on: the key, the bytes, and the actor
+/// when it is not the key's own.
+fn own_sends() -> Vec<([u8; 32], Vec<u8>, Option<Actor>)> {
+    let mut sends = Vec::new();
+    for message in [vec![2, 3], vec![1], vec![0]] {
+        sends.push((MARKER_KEY, message.clone(), None));
+        sends.push((SECOND_KEY, message, None));
+    }
+    for message in [vec![2], vec![0]] {
+        for to in [seat_of(OTHER), second_marker(), first_s_marker()] {
+            sends.push((MARKER_KEY, message.clone(), Some(to)));
+        }
+    }
+    sends
+}
+
+/// The mark under which the role sends `key`'s own message `message`, to `to` when given.
+fn own_mark(key: [u8; 32], message: &[u8], to: Option<Actor>) -> u64 {
+    let wanted = (key, message.to_vec(), to);
+    let at = own_sends().iter().position(|send| *send == wanted);
+    OWN_SENDS_FROM + at.expect("the role sends this own message") as u64
+}
+
 fn library_to(to: Actor) -> SyncMessage {
     SyncMessage::new(
         to,
@@ -139,6 +173,12 @@ fn sent(ctx: &Ctx, mark: u64) -> Vec<SyncMessage> {
         )],
         LIBRARY_ELSEWHERE => vec![library_to(witness())],
         PROGRAM_ELSEWHERE => vec![program_to(Actor::new(KEY, ELSEWHERE))],
+        mark if mark >= OWN_SENDS_FROM => {
+            let (key, message, to) = own_sends().swap_remove((mark - OWN_SENDS_FROM) as usize);
+            let mut sent = own_for::<Sending>(key, message);
+            sent.to = to.unwrap_or(sent.to);
+            vec![sent]
+        }
         _ => vec![noted_from(ctx.caller().map(Caller::account), config)],
     }
 }
@@ -231,6 +271,7 @@ enum Note {
     Exempt,
 }
 
+// By hand: it runs under a guard that does not list the first role.
 impl Gated for Note {
     fn needs<R: Role>(&self) -> bool {
         matches!(self, Note::Gated)
@@ -248,7 +289,11 @@ fn handlers() -> SyncMessage {
     program_to(seat_of(OTHER))
 }
 
-fn note(_input: &ReceiveInput, _message: Note) -> Response {
+// At the seat it sends to it sends nothing, or the message would come back for ever.
+fn note(input: &ReceiveInput, _message: Note) -> Response {
+    if input.receiver == handlers().to {
+        return Response::keep_state();
+    }
     Response::keep_state().send(handlers())
 }
 
@@ -257,49 +302,88 @@ type SendingSecond = (First, Sending);
 type SendingFirst = (Sending, First);
 type SendingAlone = (Sending,);
 
-fn at<G: Roles<RootAndSending, Note>>(
-    receiver: Actor,
-    from: Option<Actor>,
-    pre: Option<&RootAndSending>,
+/// The actors these tests send to, beside the config.
+fn reached() -> [Actor; 7] {
+    [
+        witness(),
+        Actor::new(KEY, ELSEWHERE),
+        marker(),
+        second_marker(),
+        first_s_marker(),
+        seat_of(OTHER),
+        seat_of(KEY),
+    ]
+}
+
+/// One transaction of the guard `G` around `note` over `pre`: `message` at `root`, signed by
+/// `signers`. Every delivery.
+fn transact_bytes<G: Roles<RootAndSending, Note> + 'static>(
+    pre: &States,
+    root: Actor,
+    signers: &[AccountId],
+    message: Vec<u8>,
+) -> Result<Vec<Transition>, Refusal> {
+    deliver::<G, RootAndSending, Note>(pre, root, signers, message, &reached(), note)
+}
+
+fn transact<G: Roles<RootAndSending, Note> + 'static>(
+    pre: &States,
+    root: Actor,
+    signers: &[AccountId],
     message: Wire<Note>,
-) -> Result<Response, Refusal> {
-    at_with::<G, RootAndSending, Note>(receiver, from, false, pre, message, note)
+) -> Result<Vec<Transition>, Refusal> {
+    transact_bytes::<G>(pre, root, signers, borsh::to_vec(&message).unwrap())
 }
 
 /// Straight to the config, with no caller.
-fn straight<G: Roles<RootAndSending, Note>>(
+fn straight<G: Roles<RootAndSending, Note> + 'static>(
     pre: &RootAndSending,
     message: Note,
 ) -> Result<Response, Refusal> {
-    at::<G>(config_actor(), None, Some(pre), Wire::Program(message))
+    let message = Wire::Program(message);
+    transact::<G>(&states(Some(pre)), config_actor(), &[], message)
+        .map(|trace| response_at(&trace, config_actor()))
 }
 
 /// From `sender`'s seat to the config. What the config answered.
-fn through_seat<G: Roles<RootAndSending, Note>>(
+fn through_seat<G: Roles<RootAndSending, Note> + 'static>(
     sender: AccountId,
     pre: &RootAndSending,
     message: Wire<Note>,
 ) -> Result<Response, Refusal> {
-    let hop = at_with::<G, RootAndSending, Note>(seat_of(sender), None, true, None, message, note)?;
-    let hop: Wire<Note> = borsh::from_slice(&hop.sync_messages[0].message).unwrap();
-    at::<G>(config_actor(), Some(seat_of(sender)), Some(pre), hop)
+    transact::<G>(&states(Some(pre)), seat_of(sender), &[sender], message)
+        .map(|trace| response_at(&trace, config_actor()))
 }
 
-/// A request for clearance from `from`, answered at the config.
-fn cleared<G: Roles<RootAndSending, Note>>(
+/// The request for clearance of an open message at `from`, signed by its account when
+/// `authorized`, answered at the config.
+fn cleared<G: Roles<RootAndSending, Note> + 'static>(
     from: Actor,
     authorized: bool,
     pre: &RootAndSending,
 ) -> Result<Response, Refusal> {
-    let request = Wire::Library(LibraryMessage::Clearance(Clearance { authorized }));
-    at::<G>(config_actor(), Some(from), Some(pre), request)
+    let signers = if authorized {
+        vec![from.account_id]
+    } else {
+        Vec::new()
+    };
+    let trace = transact::<G>(
+        &states(Some(pre)),
+        from,
+        &signers,
+        Wire::Program(Note::Open),
+    )?;
+    let answer = trace
+        .iter()
+        .find(|step| step.input.receiver == config_actor() && step.input.from == Some(from));
+    Ok(answer.expect("the seat asked the config").response.clone())
 }
 
 fn own_op(mark: u64) -> Wire<Note> {
     Wire::op::<Sending>(Op::Own(borsh::to_vec(&mark).unwrap()))
 }
 
-fn consent_goes_ahead<G: Roles<RootAndSending, Note>>() {
+fn consent_goes_ahead<G: Roles<RootAndSending, Note> + 'static>() {
     let guard = std::any::type_name::<G>();
     let straight = straight::<G>(&sending(1), Note::Open).unwrap();
     assert_eq!(straight.sync_messages, [noted(None), handlers()], "{guard}");
@@ -321,9 +405,9 @@ fn a_consent_s_messages_go_ahead_of_the_handler_s_own() {
     }
 }
 
-fn clearance_answers<G: Roles<RootAndSending, Note>>() {
+fn clearance_answers<G: Roles<RootAndSending, Note> + 'static>() {
     let guard = std::any::type_name::<G>();
-    for from in [seat_of(KEY), seat_of(OTHER), config_actor()] {
+    for from in [seat_of(KEY), seat_of(OTHER)] {
         for authorized in [true, false] {
             let response = cleared::<G>(from, authorized, &sending(1)).unwrap();
             assert_eq!(response.post_state, None, "{guard}");
@@ -336,8 +420,28 @@ fn clearance_answers<G: Roles<RootAndSending, Note>>() {
     }
 }
 
+/// A request for clearance the config sent itself, which the guard never sends.
+fn config_s_own_request<G: Roles<RootAndSending, Note>>() {
+    let guard = std::any::type_name::<G>();
+    let state = borsh::to_vec(&sending(1)).unwrap();
+    for authorized in [true, false] {
+        let request = Wire::Library(LibraryMessage::Clearance(Clearance { authorized }));
+        let response =
+            at_actor::<G>(config_actor(), Some(config_actor()), &state, request).unwrap();
+        assert_eq!(response.post_state, None, "{guard}");
+        assert_eq!(
+            response.sync_messages,
+            [noted(authorized.then_some(config_actor().account_id))],
+            "{guard}"
+        );
+    }
+}
+
 #[test]
 fn a_request_for_clearance_is_answered_with_the_consent_s_messages() {
+    config_s_own_request::<SendingSecond>();
+    config_s_own_request::<SendingFirst>();
+    config_s_own_request::<SendingAlone>();
     clearance_answers::<SendingSecond>();
     clearance_answers::<SendingFirst>();
     clearance_answers::<SendingAlone>();
@@ -347,19 +451,18 @@ fn a_request_for_clearance_is_answered_with_the_consent_s_messages() {
 fn an_exempt_message_comes_without_the_consent_s_messages() {
     let straight = straight::<SendingSecond>(&sending(1), Note::Exempt).unwrap();
     assert_eq!(straight.sync_messages, [handlers()]);
-    let elsewhere = at_with::<SendingSecond, RootAndSending, Note>(
+    let trace = transact::<SendingSecond>(
+        &states(Some(&sending(1))),
         seat_of(KEY),
-        None,
-        true,
-        None,
+        &[KEY],
         Wire::Program(Note::Exempt),
-        note,
     )
     .unwrap();
+    let elsewhere = response_at(&trace, seat_of(KEY));
     assert_eq!(elsewhere.sync_messages, [handlers()]);
 }
 
-fn operation_sends<G: Roles<RootAndSending, Note>>() {
+fn operation_sends<G: Roles<RootAndSending, Note> + 'static>() {
     let guard = std::any::type_name::<G>();
     let response = through_seat::<G>(KEY, &sending(1), own_op(9)).unwrap();
     let config: RootAndSending = borsh::from_slice(response.post_state.as_ref().unwrap()).unwrap();
@@ -400,14 +503,17 @@ fn a_holder_operation_asks_no_consent_and_sends_nothing() {
     }
 }
 
-fn refused_in_program<G: Roles<RootAndSending, Note>>() {
+fn refused_in_program<G: Roles<RootAndSending, Note> + 'static>() {
     let guard = std::any::type_name::<G>();
     let refused = Some(Refusal::of::<Sending>(AuthorityError::RoleSendsInProgram));
     for mark in IN_PROGRAM {
         let consent = straight::<G>(&sending(mark), Note::Open);
         assert_eq!(consent.err(), refused, "{guard}, mark {mark}, consent");
-        let clearance = cleared::<G>(seat_of(KEY), true, &sending(mark));
-        assert_eq!(clearance.err(), refused, "{guard}, mark {mark}, clearance");
+        // The handler sends nothing at this seat, so its request is the only one.
+        for authorized in [true, false] {
+            let clearance = cleared::<G>(seat_of(OTHER), authorized, &sending(mark));
+            assert_eq!(clearance.err(), refused, "{guard}, mark {mark}, clearance");
+        }
         let operated = through_seat::<G>(KEY, &sending(1), own_op(mark));
         assert_eq!(operated.err(), refused, "{guard}, mark {mark}, operation");
     }
@@ -444,7 +550,7 @@ fn a_role_s_messages_to_another_program_are_sent() {
     assert_eq!(operated.sync_messages, [library_to(witness())]);
 }
 
-/// Runs `message` at `receiver`, from `from`, over the actor's state `state`.
+/// The guard at `receiver` over `state`, for a message from `from` that no transaction carries.
 fn at_actor<G: Roles<RootAndSending, Note>>(
     receiver: Actor,
     from: Option<Actor>,
@@ -459,6 +565,17 @@ fn at_actor<G: Roles<RootAndSending, Note>>(
         message: borsh::to_vec(&message).unwrap(),
     };
     try_guard::<G, RootAndSending, Note>(&input, &SEED, InitGate::Deployer, message, note)
+}
+
+/// The role's own operation `mark` from `KEY`'s seat, with `receiver` holding `b"before"`.
+/// Every delivery.
+fn operated_over<G: Roles<RootAndSending, Note> + 'static>(
+    mark: u64,
+    receiver: Actor,
+) -> Result<Vec<Transition>, Refusal> {
+    let mut pre = states(Some(&sending(1)));
+    pre.insert(receiver, b"before".to_vec());
+    transact::<G>(&pre, seat_of(KEY), &[KEY], own_op(mark))
 }
 
 /// What the role writes for `message` over `state`, with no caller and the config's actor.
@@ -481,8 +598,8 @@ fn a_role_s_own_actor_is_a_pda_of_the_program_for_its_role_config_and_key() {
     );
     let other_config = Actor::new(config_account(PROGRAM, &seed_of_other_config()), PROGRAM);
     let others = [
-        own_actor::<Sending>(config_actor(), &SECOND_KEY),
-        own_actor::<First>(config_actor(), &MARKER_KEY),
+        second_marker(),
+        first_s_marker(),
         own_actor::<Sending>(other_config, &MARKER_KEY),
         config_actor(),
         seat_of(OTHER),
@@ -506,7 +623,7 @@ fn a_role_s_own_message_travels_with_its_bytes_last_and_unprefixed() {
     assert_eq!(bytes, expected);
 }
 
-fn own_sent<G: Roles<RootAndSending, Note>>() {
+fn own_sent<G: Roles<RootAndSending, Note> + 'static>() {
     let guard = std::any::type_name::<G>();
     let own = own_for::<Sending>(MARKER_KEY, vec![2]);
     let consent = straight::<G>(&sending(OWN_TO_ACTOR), Note::Open).unwrap();
@@ -517,15 +634,19 @@ fn own_sent<G: Roles<RootAndSending, Note>>() {
         std::slice::from_ref(&own),
         "{guard}"
     );
-    let operated = through_seat::<G>(KEY, &sending(1), own_op(OWN_TO_ACTOR)).unwrap();
+    let trace = operated_over::<G>(OWN_TO_ACTOR, marker()).unwrap();
     assert_eq!(
-        operated.sync_messages,
+        response_at(&trace, config_actor()).sync_messages,
         std::slice::from_ref(&own),
         "{guard}"
     );
-    let message = borsh::from_slice(&own.message).unwrap();
-    let at_marker = at_actor::<G>(own.to, Some(config_actor()), b"before", message).unwrap();
-    assert_eq!(at_marker.post_state, wrote(b"before", &[2]), "{guard}");
+    let at_marker = step_at(&trace, marker());
+    assert_eq!(at_marker.input.from, Some(config_actor()), "{guard}");
+    assert_eq!(
+        at_marker.response.post_state,
+        wrote(b"before", &[2]),
+        "{guard}"
+    );
 }
 
 #[test]
@@ -535,17 +656,15 @@ fn a_role_s_own_message_to_its_own_actor_is_sent() {
     own_sent::<SendingAlone>();
 }
 
-fn receives<G: Roles<RootAndSending, Note>>() {
+fn receives<G: Roles<RootAndSending, Note> + 'static>() {
     let guard = std::any::type_name::<G>();
     for key in [MARKER_KEY, SECOND_KEY] {
         let receiver = own_actor::<Sending>(config_actor(), &key);
         let at = |message: Vec<u8>| {
-            at_actor::<G>(
-                receiver,
-                Some(config_actor()),
-                b"before",
-                own::<Sending, Note>(key, message),
-            )
+            let trace = operated_over::<G>(own_mark(key, &message, None), receiver)?;
+            let step = step_at(&trace, receiver);
+            assert_eq!(step.input.from, Some(config_actor()), "{guard}");
+            Ok::<_, Refusal>(step.response.clone())
         };
         let wrote_state = at(vec![2, 3]).unwrap();
         assert_eq!(wrote_state.post_state, wrote(b"before", &[2, 3]), "{guard}");
@@ -568,22 +687,14 @@ fn a_role_s_own_message_runs_its_rules_over_the_actor_s_state() {
     receives::<SendingAlone>();
 }
 
-fn only_at_own_actor<G: Roles<RootAndSending, Note>>() {
+fn only_at_own_actor<G: Roles<RootAndSending, Note> + 'static>() {
     let guard = std::any::type_name::<G>();
-    let elsewhere = [
-        seat_of(OTHER),
-        own_actor::<Sending>(config_actor(), &SECOND_KEY),
-        own_actor::<First>(config_actor(), &MARKER_KEY),
-    ];
+    let elsewhere = [seat_of(OTHER), second_marker(), first_s_marker()];
     for receiver in elsewhere {
         // The role turns [0] away, which pins E141 ahead of its rules.
         for message in [vec![2], vec![0]] {
-            let own = at_actor::<G>(
-                receiver,
-                Some(config_actor()),
-                b"before",
-                own::<Sending, Note>(MARKER_KEY, message),
-            );
+            let mark = own_mark(MARKER_KEY, &message, Some(receiver));
+            let own = operated_over::<G>(mark, receiver);
             assert_eq!(
                 own.err(),
                 Some(Refusal::of::<Sending>(AuthorityError::NotOwnActor)),
@@ -598,35 +709,45 @@ fn a_role_s_own_message_runs_only_at_its_own_actor_for_its_key() {
     only_at_own_actor::<SendingSecond>();
     only_at_own_actor::<SendingFirst>();
     only_at_own_actor::<SendingAlone>();
-    let consent = straight::<SendingSecond>(&sending(OWN_TO_SEAT), Note::Open).unwrap();
-    assert_eq!(consent.sync_messages[0], own_to_seat());
-    let message = borsh::from_slice(&own_to_seat().message).unwrap();
-    let at_seat = at_actor::<SendingSecond>(seat_of(OTHER), Some(config_actor()), b"", message);
+    let consent = straight::<SendingSecond>(&sending(OWN_TO_SEAT), Note::Open);
     assert_eq!(
-        at_seat.err().unwrap().text(),
+        consent.err().unwrap().text(),
         "lez-authority/sending E141: the sending's own message reached an actor that is not its own for that key"
     );
 }
 
-fn only_from_config<G: Roles<RootAndSending, Note>>() {
+fn only_from_config<G: Roles<RootAndSending, Note> + 'static>() {
     let guard = std::any::type_name::<G>();
     let foreign_config = Actor::new(config_actor().account_id, ELSEWHERE);
-    let ways = [
-        (marker(), None),
-        (marker(), Some(seat_of(KEY))),
-        (marker(), Some(foreign_config)),
-        (config_actor(), Some(config_actor())),
-        (config_actor(), Some(seat_of(KEY))),
-    ];
-    for (receiver, from) in ways {
-        for message in [
+    let owns = || {
+        [
             own::<Sending, Note>(MARKER_KEY, vec![2]),
             own::<Stranger, Note>(MARKER_KEY, vec![2]),
-        ] {
-            let own = at_actor::<G>(receiver, from, b"", message);
+        ]
+    };
+    let refused = Some(AuthorityError::NotFromConfig);
+    let pre = states(Some(&sending(1)));
+    for message in owns() {
+        let bytes = borsh::to_vec(&message).unwrap();
+        let from_client = transact_bytes::<G>(&pre, marker(), &[], bytes.clone());
+        let through = sent_on(marker(), &bytes);
+        let from_elsewhere = transact_bytes::<G>(&pre, foreign_config, &[], through);
+        for own in [from_client, from_elsewhere] {
+            assert_eq!(own.err().map(|refusal| refusal.error), refused, "{guard}");
+        }
+    }
+    // No actor of the program sends these: the guard refuses the handler or the role that tries.
+    let ways = [
+        (marker(), seat_of(KEY)),
+        (config_actor(), config_actor()),
+        (config_actor(), seat_of(KEY)),
+    ];
+    for (receiver, from) in ways {
+        for message in owns() {
+            let own = at_actor::<G>(receiver, Some(from), b"", message);
             assert_eq!(
                 own.err().map(|refusal| refusal.error),
-                Some(AuthorityError::NotFromConfig),
+                refused,
                 "{guard}, at {receiver:?} from {from:?}"
             );
         }
@@ -638,10 +759,10 @@ fn a_role_s_own_message_comes_only_from_the_config_to_another_actor() {
     only_from_config::<SendingSecond>();
     only_from_config::<SendingFirst>();
     only_from_config::<SendingAlone>();
-    let refused = at_actor::<SendingSecond>(
+    let refused = transact::<SendingSecond>(
+        &states(Some(&sending(1))),
         marker(),
-        None,
-        b"",
+        &[],
         own::<Sending, Note>(MARKER_KEY, vec![2]),
     );
     assert_eq!(
@@ -658,6 +779,7 @@ impl Role for Stranger {
 }
 
 /// `R`'s own message for the marker key, at `R`'s own actor, from the config, under the guard `G`.
+/// No transaction carries it: the config refuses a role that sends another role's own message.
 fn at_own_actor<G: Roles<RootAndSending, Note>, R: Role>() -> Option<Refusal> {
     let receiver = own_actor::<R>(config_actor(), &MARKER_KEY);
     let message = own::<R, Note>(MARKER_KEY, vec![2]);
@@ -702,7 +824,9 @@ fn an_own_message_inside_a_hop_does_not_decode() {
         via: None,
         inner: borsh::to_vec(&own::<Sending, Note>(MARKER_KEY, vec![2])).unwrap(),
     }));
-    let at_config = at::<SendingSecond>(config_actor(), Some(seat_of(KEY)), Some(&sending(1)), hop);
+    // No transaction carries this: a seat refuses an own message and forwards none.
+    let state = borsh::to_vec(&sending(1)).unwrap();
+    let at_config = at_actor::<SendingSecond>(config_actor(), Some(seat_of(KEY)), &state, hop);
     assert_eq!(
         at_config.err(),
         Some(Refusal::of::<First>(AuthorityError::MessageDoesNotDecode))
@@ -711,7 +835,7 @@ fn an_own_message_inside_a_hop_does_not_decode() {
 
 /// A handler that sends the role's own message to its own actor, sync or async, to the config,
 /// sync or async, or to another program, or that sends a seat the role's operation.
-#[derive(BorshSerialize, BorshDeserialize)]
+#[derive(BorshSerialize, BorshDeserialize, Gated)]
 enum Forge {
     ToMarker,
     AsyncToMarker,
@@ -720,8 +844,6 @@ enum Forge {
     Elsewhere,
     OpToSeat,
 }
-
-impl Gated for Forge {}
 
 fn forged_own() -> Wire<()> {
     own::<Sending, ()>(MARKER_KEY, vec![2])
@@ -744,16 +866,17 @@ fn forge(_input: &ReceiveInput, message: Forge) -> Response {
     }
 }
 
+/// `message` at `receiver`. What the guard returned there.
 fn forged(receiver: Actor, message: Forge) -> Result<Response, Refusal> {
-    let pre = (receiver == config_actor()).then(|| sending(1));
-    at_with::<SendingSecond, RootAndSending, Forge>(
+    run_with::<SendingSecond, RootAndSending, Forge>(
+        Some(&sending(1)),
         receiver,
-        None,
-        false,
-        pre.as_ref(),
+        &[],
         Wire::Program(message),
+        &reached(),
         forge,
     )
+    .map(|trace| response_at(&trace, receiver))
 }
 
 #[test]
@@ -768,9 +891,11 @@ fn a_handler_cannot_send_a_role_s_own_message_in_its_program() {
         let elsewhere = forged(receiver, Forge::Elsewhere).unwrap();
         let own = SyncMessage::new(witness(), &forged_own());
         assert!(elsewhere.sync_messages.contains(&own));
-        let operation = forged(receiver, Forge::OpToSeat).unwrap();
-        let op = SyncMessage::new(seat_of(OTHER), &Wire::<()>::op::<Sending>(Op::Renounce));
-        assert!(operation.sync_messages.contains(&op));
+        // The guard lets the operation leave, and the seat it reaches refuses it as unsigned.
+        assert_eq!(
+            forged(receiver, Forge::OpToSeat).err(),
+            Some(Refusal::of::<Sending>(AuthorityError::MissingSignature))
+        );
     }
     assert_eq!(
         forged(config_actor(), Forge::ToMarker)

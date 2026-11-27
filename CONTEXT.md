@@ -130,3 +130,7 @@ _Avoid_: owner, uploader
 **Genesis key**:
 A key compiled into a program as the opt-in alternative to the deployer for installing the first holder, for programs whose header account is not a key.
 _Avoid_: deployer key
+
+**World**:
+What the engine's and the freeze's tests run programs in: the programs under test, their actor states, and LEZ's own executor delivering one transaction at a time. After the states a test starts with, every change comes from a transaction the executor accepted.
+_Avoid_: simulator, mock runtime, sandbox

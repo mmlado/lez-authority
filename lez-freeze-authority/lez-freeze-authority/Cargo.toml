@@ -11,3 +11,6 @@ readme = "../README.md"
 borsh.workspace = true
 lee_core.workspace = true
 lez-admin-authority.workspace = true
+
+[dev-dependencies]
+lez-authority-world.workspace = true
