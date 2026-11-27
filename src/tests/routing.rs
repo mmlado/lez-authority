@@ -318,12 +318,7 @@ fn a_forward_from_another_program_is_refused() {
         inner: borsh::to_vec(&Wire::<Msg>::op::<First>(Op::Init)).unwrap(),
     }));
     let foreign = Actor::new(KEY, ELSEWHERE);
-    let sent_on = (
-        config_actor(),
-        borsh::to_vec(&hop).unwrap(),
-        None::<PdaSeed>,
-    );
-    let through = borsh::to_vec(&sent_on).unwrap();
+    let through = sent_on(config_actor(), &borsh::to_vec(&hop).unwrap());
     assert_eq!(
         run_bytes(None, foreign, &[], through, &[]).err(),
         Some(Refusal::of::<First>(AuthorityError::NotOwnProgram))

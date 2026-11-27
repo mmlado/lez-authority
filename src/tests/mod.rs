@@ -183,17 +183,24 @@ fn config_actor() -> Actor {
 /// Every actor's state between transactions.
 type States = BTreeMap<Actor, Vec<u8>>;
 
-/// Any other program. It sends its message's bytes on when the message names an actor, with
-/// the seed the message carries, and otherwise does nothing.
+/// What starts a message that asks another program to send bytes on.
+const SEND_ON: [u8; 8] = *b"send on:";
+
+/// A message for another program: send `bytes` on to `to`.
+fn sent_on(to: Actor, bytes: &[u8]) -> Vec<u8> {
+    borsh::to_vec(&(SEND_ON, to, bytes)).unwrap()
+}
+
+/// Any other program. It sends bytes on when its message asks it to, and otherwise does
+/// nothing.
 fn other_program(input: &ReceiveInput) -> Result<Response, Refusal> {
     let mut response = Response::keep_state();
-    if let Ok((to, bytes, seed)) =
-        borsh::from_slice::<(Actor, Vec<u8>, Option<PdaSeed>)>(&input.message)
+    if let Ok((SEND_ON, to, bytes)) = borsh::from_slice::<([u8; 8], Actor, Vec<u8>)>(&input.message)
     {
         response.sync_messages.push(SyncMessage {
             to,
             message: bytes,
-            pda_seeds: seed.into_iter().collect(),
+            pda_seeds: BTreeSet::new(),
         });
     }
     Ok(response)

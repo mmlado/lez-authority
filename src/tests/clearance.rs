@@ -72,10 +72,7 @@ fn handled_with(
             });
             (sender, borsh::to_vec(&pass).unwrap())
         }
-        Some(sender) => (
-            sender,
-            borsh::to_vec(&(seat, &message, None::<PdaSeed>)).unwrap(),
-        ),
+        Some(sender) => (sender, sent_on(seat, &message)),
     };
     let signers = if authorized { vec![KEY] } else { Vec::new() };
     let trace = deliver::<(First, Marking), RootAndMark, Halt>(
@@ -177,10 +174,7 @@ fn without_a_refusing_role_nothing_asks_for_clearance() {
                 });
                 (sender, borsh::to_vec(&pass).unwrap())
             }
-            Some(sender) => (
-                sender,
-                borsh::to_vec(&(seat, &message, None::<PdaSeed>)).unwrap(),
-            ),
+            Some(sender) => (sender, sent_on(seat, &message)),
         };
         let trace = run_bytes(Some(&two(None)), root, &[KEY], sent, &[seat]).unwrap();
         let step = trace
@@ -255,8 +249,8 @@ fn a_clearance_sees_the_sender_only_when_it_authorized() {
 fn a_clearance_from_outside_the_program_is_refused() {
     let request = borsh::to_vec(&clearance(true)).unwrap();
     let foreign = Actor::new(KEY, ELSEWHERE);
-    let sent_on = borsh::to_vec(&(config_actor(), &request, None::<PdaSeed>)).unwrap();
-    for (root, message) in [(config_actor(), request.clone()), (foreign, sent_on)] {
+    let through = sent_on(config_actor(), &request);
+    for (root, message) in [(config_actor(), request.clone()), (foreign, through)] {
         assert_eq!(
             deliver::<(First, Marking), RootAndMark, Halt>(
                 &states(Some(&root_and_mark())),
