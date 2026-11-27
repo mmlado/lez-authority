@@ -5,7 +5,7 @@
 /// ```compile_fail,E0080
 /// use borsh::{BorshDeserialize, BorshSerialize};
 /// use lee_core::program::{ReceiveInput, Response};
-/// use lez_authority::{AuthoritySlot, Gated, HasSlot, InitGate, Policy, Role, Wire};
+/// use lez_authority::{AuthoritySlot, Gated, HasSlot, Hooks, InitGate, Policy, Role, Wire};
 ///
 /// struct Owner;
 ///
@@ -15,6 +15,7 @@
 /// }
 ///
 /// impl<C: HasSlot<Owner>> Policy<C> for Owner {}
+/// impl<C: HasSlot<Owner>> Hooks<C> for Owner {}
 ///
 /// struct Guardian;
 ///
@@ -24,6 +25,7 @@
 /// }
 ///
 /// impl<C: HasSlot<Guardian>> Policy<C> for Guardian {}
+/// impl<C: HasSlot<Guardian>> Hooks<C> for Guardian {}
 ///
 /// #[derive(Default, BorshSerialize, BorshDeserialize, HasSlot)]
 /// struct Config {
@@ -58,7 +60,7 @@ pub struct TwoRolesOfOneName;
 /// ```compile_fail,E0080
 /// use borsh::{BorshDeserialize, BorshSerialize};
 /// use lee_core::program::{ReceiveInput, Response};
-/// use lez_authority::{AuthoritySlot, Gated, HasSlot, InitGate, Policy, Role, Wire};
+/// use lez_authority::{AuthoritySlot, Gated, HasSlot, Hooks, InitGate, Policy, Role, Wire};
 ///
 /// struct Deputy;
 ///
@@ -70,6 +72,8 @@ pub struct TwoRolesOfOneName;
 /// impl<C: HasSlot<Deputy>> Policy<C> for Deputy {
 ///     const BY_NOMINATION_ONLY: bool = true;
 /// }
+///
+/// impl<C: HasSlot<Deputy>> Hooks<C> for Deputy {}
 ///
 /// #[derive(Default, BorshSerialize, BorshDeserialize, HasSlot)]
 /// struct Config {
@@ -102,7 +106,7 @@ pub struct NominationOnlyRoot;
 /// ```compile_fail,E0080
 /// use borsh::{BorshDeserialize, BorshSerialize};
 /// use lee_core::program::{ReceiveInput, Response};
-/// use lez_authority::{AuthoritySlot, Gated, HasSlot, InitGate, Policy, Refusal, Role, Wire};
+/// use lez_authority::{AuthoritySlot, Gated, HasSlot, Hooks, InitGate, Policy, Refusal, Role, Wire};
 ///
 /// struct Deputy;
 ///
@@ -115,6 +119,8 @@ pub struct NominationOnlyRoot;
 ///     const BY_NOMINATION_ONLY: bool = true;
 /// }
 ///
+/// impl<C: HasSlot<Deputy>> Hooks<C> for Deputy {}
+///
 /// struct Chief;
 ///
 /// impl Role for Chief {
@@ -123,6 +129,7 @@ pub struct NominationOnlyRoot;
 /// }
 ///
 /// impl<C: HasSlot<Chief>> Policy<C> for Chief {}
+/// impl<C: HasSlot<Chief>> Hooks<C> for Chief {}
 ///
 /// #[derive(Default, BorshSerialize, BorshDeserialize, HasSlot)]
 /// struct Config {
@@ -157,7 +164,7 @@ pub struct NominationOnlyRootOfTwo;
 /// ```compile_fail,E0080
 /// use borsh::{BorshDeserialize, BorshSerialize};
 /// use lee_core::program::{ReceiveInput, Response};
-/// use lez_authority::{AuthoritySlot, Gated, HasSlot, InitGate, Policy, Role, Wire};
+/// use lez_authority::{AuthoritySlot, Gated, HasSlot, Hooks, InitGate, Policy, Role, Wire};
 ///
 /// struct Pauser;
 ///
@@ -166,7 +173,9 @@ pub struct NominationOnlyRootOfTwo;
 ///     type Slot = AuthoritySlot;
 /// }
 ///
-/// impl<C: HasSlot<Pauser>> Policy<C> for Pauser {
+/// impl<C: HasSlot<Pauser>> Policy<C> for Pauser {}
+///
+/// impl<C: HasSlot<Pauser>> Hooks<C> for Pauser {
 ///     const REFUSES_MESSAGES: bool = true;
 /// }
 ///
@@ -177,7 +186,9 @@ pub struct NominationOnlyRootOfTwo;
 ///     type Slot = AuthoritySlot;
 /// }
 ///
-/// impl<C: HasSlot<Halter>> Policy<C> for Halter {
+/// impl<C: HasSlot<Halter>> Policy<C> for Halter {}
+///
+/// impl<C: HasSlot<Halter>> Hooks<C> for Halter {
 ///     const REFUSES_MESSAGES: bool = true;
 /// }
 ///
@@ -240,7 +251,7 @@ pub struct ExemptNamingNoRole;
 /// ```compile_fail,E0080
 /// use borsh::{BorshDeserialize, BorshSerialize};
 /// use lee_core::program::{ReceiveInput, Response};
-/// use lez_authority::{AuthoritySlot, Gated, HasSlot, InitGate, Policy, Role, Wire};
+/// use lez_authority::{AuthoritySlot, Gated, HasSlot, Hooks, InitGate, Policy, Role, Wire};
 ///
 /// struct Owner;
 ///
@@ -250,6 +261,7 @@ pub struct ExemptNamingNoRole;
 /// }
 ///
 /// impl<C: HasSlot<Owner>> Policy<C> for Owner {}
+/// impl<C: HasSlot<Owner>> Hooks<C> for Owner {}
 ///
 /// struct Pauser;
 ///
@@ -290,7 +302,7 @@ pub struct MarkerNamingAnUnlistedRole;
 /// ```compile_fail,E0080
 /// use borsh::{BorshDeserialize, BorshSerialize};
 /// use lee_core::program::{ReceiveInput, Response};
-/// use lez_authority::{AuthoritySlot, Gated, HasSlot, InitGate, Policy, Role, Wire};
+/// use lez_authority::{AuthoritySlot, Gated, HasSlot, Hooks, InitGate, Policy, Role, Wire};
 ///
 /// struct Owner;
 ///
@@ -300,6 +312,7 @@ pub struct MarkerNamingAnUnlistedRole;
 /// }
 ///
 /// impl<C: HasSlot<Owner>> Policy<C> for Owner {}
+/// impl<C: HasSlot<Owner>> Hooks<C> for Owner {}
 ///
 /// #[derive(Default, BorshSerialize, BorshDeserialize, HasSlot)]
 /// struct Config {

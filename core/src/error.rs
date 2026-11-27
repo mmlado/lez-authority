@@ -1,6 +1,6 @@
 //! Why a message was refused, and the refusal as a value.
 
-use crate::*;
+use crate::Role;
 
 /// Why a message was refused. It becomes a panic, which is how a handler fails on LEZ, with
 /// a stable code in front of the sentence: `lez-authority/<role> E103: the signing account
@@ -218,7 +218,7 @@ impl AuthorityError {
     }
 }
 
-/// A refusal as a value: what was refused, and the role whose rule refused it. [`guard()`]
+/// A refusal as a value: what was refused, and the role whose rule refused it. The guard
 /// panics with its [`text`](Self::text).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Refusal {

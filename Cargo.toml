@@ -3,12 +3,13 @@ name = "lez-authority"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Authority primitives for LEZ actor programs: the holder slot, the vouched caller, and the routing between a sender's own actor and the program's config actor"
+description = "Authority primitives for LEZ actor programs: the guard, the hop from a sender's own actor to the config actor, and each role's policy and hooks"
 repository.workspace = true
 readme = "README.md"
 
 [workspace]
 members = [
+    "core",
     "macros",
     "fixtures/lez-sample-authority",
     "fixtures/by-name",
@@ -36,6 +37,7 @@ repository = "https://github.com/mmlado/lez-authority"
 borsh = { version = "1", features = ["derive"] }
 lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone", tag = "v0.4.0-rc3" }
 lez-authority = { path = "." }
+lez-authority-core = { path = "core" }
 lez-admin-authority = { path = "lez-admin-authority/lez-admin-authority" }
 lez-freeze-authority = { path = "lez-freeze-authority/lez-freeze-authority" }
 # Only fixtures/inherited uses it, to check a role crate renamed in the workspace root.
@@ -44,6 +46,7 @@ inherited-role = { package = "lez-sample-authority", path = "fixtures/lez-sample
 [dependencies]
 borsh.workspace = true
 lee_core.workspace = true
+lez-authority-core.workspace = true
 lez-authority-macros = { path = "macros" }
 # The sha256 lee_core hashes PDAs with, which a risc0 guest runs accelerated.
 risc0-zkvm = { version = "3.0.5", default-features = false, features = ["std"] }

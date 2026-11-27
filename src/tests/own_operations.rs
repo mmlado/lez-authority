@@ -10,7 +10,9 @@ impl Role for Seizing {
     type Slot = Marked;
 }
 
-impl<C: HasSlot<Seizing>> Policy<C> for Seizing {
+impl<C: HasSlot<Seizing>> Policy<C> for Seizing {}
+
+impl<C: HasSlot<Seizing>> Hooks<C> for Seizing {
     fn operate(ctx: &Ctx, config: &C, _op: &[u8]) -> Result<(Marked, Vec<SyncMessage>), Refusal> {
         let caller = ctx.caller().unwrap();
         let slot = Marked {

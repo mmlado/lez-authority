@@ -23,9 +23,11 @@
 //! A program names its roles as a tuple, [`Roles`]: one role, `(A,)`, or two, `(A, B)`.
 //! Each keeps its own slot in the config. The first creates the config.
 //!
-//! This crate is policy-free. Which role a slot plays comes from the consumer through
-//! [`Role`], and who may install, nominate and renounce, what a role's own operations do, and
-//! which program messages may run, over which state and with which writes, through [`Policy`].
+//! No role lives in this crate. Which role a slot plays comes from the consumer through
+//! [`Role`], who may install, nominate and renounce through [`Policy`], and what a role's own
+//! operations do and which program messages may run, over which state and with which writes,
+//! through [`Hooks`]. The role, its slot and the refusal codes come from `lez-authority-core`,
+//! which this crate re-exports under the same names.
 
 #![warn(missing_docs)]
 
@@ -37,18 +39,18 @@ extern crate self as lez_authority;
 /// handler. See [`lez_authority_macros`].
 pub use lez_authority_macros::{Gated, HasSlot, guard};
 
-mod error;
-mod role;
-mod roles;
-mod routing;
-mod slot;
+// From the top: each module names only those below it, as src/tests/layers.rs checks.
+mod guard;
+mod hooks;
+mod policy;
 mod wire;
 
-pub use error::{AuthorityError, Refusal};
-pub use role::{Ctx, HasSlot, InitGate, Policy, Role};
-pub use roles::Roles;
-pub use routing::{config_account, guard, own_actor, seed, try_guard};
-pub use slot::{AuthoritySlot, Caller, Holder, Slot};
+pub use guard::{Roles, config_account, guard, seed, try_guard};
+pub use hooks::{Hooks, own_actor};
+pub use lez_authority_core::{
+    AuthorityError, AuthoritySlot, HasSlot, Holder, InitGate, Refusal, Role, Slot,
+};
+pub use policy::{Caller, Ctx, Policy};
 pub use wire::{Clearance, Forwarded, Gated, LIBRARY_TAG, LibraryMessage, Op, Wire};
 
 #[cfg(doctest)]

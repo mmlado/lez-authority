@@ -8,7 +8,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use lee_core::account::{AccountId, Actor, ActorState};
 use lee_core::program::{PdaSeed, ReceiveInput, Response};
 use lez_authority::{
-    AuthoritySlot, Gated, HasSlot, Holder, InitGate, Op, Policy, Role, Roles, Slot, Wire,
+    AuthoritySlot, Gated, HasSlot, Holder, Hooks, InitGate, Op, Policy, Role, Roles, Slot, Wire,
     config_account,
 };
 
@@ -20,6 +20,7 @@ impl Role for First {
 }
 
 impl<C: HasSlot<First>> Policy<C> for First {}
+impl<C: HasSlot<First>> Hooks<C> for First {}
 
 struct Second;
 
@@ -28,8 +29,10 @@ impl Role for Second {
     type Slot = AuthoritySlot;
 }
 
+impl<C: HasSlot<Second>> Policy<C> for Second {}
+
 // The messages below are exempt from it, so it declares that it refuses, with no rules yet.
-impl<C: HasSlot<Second>> Policy<C> for Second {
+impl<C: HasSlot<Second>> Hooks<C> for Second {
     const REFUSES_MESSAGES: bool = true;
 }
 
@@ -42,6 +45,7 @@ impl Role for Third {
 }
 
 impl<C: HasSlot<Third>> Policy<C> for Third {}
+impl<C: HasSlot<Third>> Hooks<C> for Third {}
 
 #[derive(Debug, Default, PartialEq, Eq)]
 struct Tagged {

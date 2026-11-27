@@ -13,8 +13,8 @@ pub use lez_admin_authority;
 pub use lez_admin_authority::lez_authority;
 pub use lez_admin_authority::{Admin, AdminOp, admin_op};
 pub use lez_authority::{
-    AuthorityError, AuthoritySlot, Caller, Gated, HasSlot, Holder, InitGate, Op, Policy, Refusal,
-    Role, Slot, Wire, config_account, guard, seed,
+    AuthorityError, AuthoritySlot, Caller, Gated, HasSlot, Holder, Hooks, InitGate, Op, Policy,
+    Refusal, Role, Slot, Wire, config_account, guard, seed,
 };
 
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -181,9 +181,28 @@ impl From<FreezeError> for AuthorityError {
 /// The freeze authority answers to the admin. Either of them nominates and renounces, and a
 /// renounce leaves the slot unset for the admin to fill again. Once the admin is renounced,
 /// nobody can nominate where the slot has no holder, so an emptied slot stays empty. An offer
-/// standing at that moment can still be accepted, and nobody can withdraw it. Only the freeze
-/// authority freezes and releases, the program or one account, and a freeze operation that would
-/// change nothing is refused.
+/// standing at that moment can still be accepted, and nobody can withdraw it.
+impl<C> Policy<C> for Freeze
+where
+    C: HasSlot<Freeze> + HasSlot<Admin>,
+{
+    const BY_NOMINATION_ONLY: bool = true;
+
+    fn may_nominate(ctx: &Ctx, config: &C) -> Result<(), Refusal> {
+        freeze_authority_or_admin(ctx, config)
+    }
+
+    fn may_renounce(ctx: &Ctx, config: &C) -> Result<(), Refusal> {
+        freeze_authority_or_admin(ctx, config)
+    }
+
+    fn renounced() -> AuthoritySlot {
+        AuthoritySlot::Unset
+    }
+}
+
+/// Only the freeze authority freezes and releases, the program or one account, and a freeze
+/// operation that would change nothing is refused.
 ///
 /// While the program is frozen, every program message is refused (E217), but for one marked
 /// `#[exempt(Freeze)]`: at the config, and at the program's other actors through their request
@@ -199,25 +218,12 @@ impl From<FreezeError> for AuthorityError {
 /// No program message runs at a marker while it holds the mark (E227), not even an exempt one,
 /// and no handler writes a state that starts with the mark at any actor (E228). So only the
 /// freeze authority marks an account.
-impl<C> Policy<C> for Freeze
+impl<C> Hooks<C> for Freeze
 where
     C: HasSlot<Freeze> + HasSlot<Admin>,
 {
-    const BY_NOMINATION_ONLY: bool = true;
     const REFUSES_MESSAGES: bool = true;
     const WATCHES_STATE: bool = true;
-
-    fn may_nominate(ctx: &Ctx, config: &C) -> Result<(), Refusal> {
-        freeze_authority_or_admin(ctx, config)
-    }
-
-    fn may_renounce(ctx: &Ctx, config: &C) -> Result<(), Refusal> {
-        freeze_authority_or_admin(ctx, config)
-    }
-
-    fn renounced() -> AuthoritySlot {
-        AuthoritySlot::Unset
-    }
 
     fn operate(
         ctx: &Ctx,

@@ -2,7 +2,7 @@
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use lee_core::program::{PdaSeed, ReceiveInput, Response};
-use lez_authority::{AuthoritySlot, Gated, HasSlot, Policy, Role};
+use lez_authority::{AuthoritySlot, Gated, HasSlot, Hooks, Policy, Role};
 
 /// The role this program has one holder of.
 pub struct Owner;
@@ -14,6 +14,7 @@ impl Role for Owner {
 
 /// The owner answers to nobody, so the default rules hold.
 impl<C: HasSlot<Owner>> Policy<C> for Owner {}
+impl<C: HasSlot<Owner>> Hooks<C> for Owner {}
 
 const CONFIG_SEED: PdaSeed = lez_authority::seed(b"owner-example/config/v1");
 

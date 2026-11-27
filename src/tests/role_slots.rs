@@ -17,6 +17,8 @@ impl<C: HasSlot<Deputy>> Policy<C> for Deputy {
     const BY_NOMINATION_ONLY: bool = true;
 }
 
+impl<C: HasSlot<Deputy>> Hooks<C> for Deputy {}
+
 fn mark_op(config: &mut WithMark, account: AccountId, op: Op) {
     let ctx = Ctx {
         caller: Some(caller(account, None)),

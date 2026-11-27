@@ -35,7 +35,9 @@ const UNSET: AuthorityError = AuthorityError::Role {
     sentence: "the watching role has no holder",
 };
 
-impl<C: HasSlot<Watching>> Policy<C> for Watching {
+impl<C: HasSlot<Watching>> Policy<C> for Watching {}
+
+impl<C: HasSlot<Watching>> Hooks<C> for Watching {
     const REFUSES_MESSAGES: bool = true;
     const WATCHES_STATE: bool = true;
 
@@ -110,7 +112,9 @@ fn peeked(state: &[u8]) -> bool {
     state.starts_with(TAG) || state.starts_with(b"PEEK")
 }
 
-impl<C: HasSlot<Peeking>> Policy<C> for Peeking {
+impl<C: HasSlot<Peeking>> Policy<C> for Peeking {}
+
+impl<C: HasSlot<Peeking>> Hooks<C> for Peeking {
     const WATCHES_STATE: bool = true;
 
     fn may_handle(_ctx: &Ctx, state: &[u8]) -> Result<(), Refusal> {
@@ -138,7 +142,9 @@ impl Role for Blind {
     type Slot = AuthoritySlot;
 }
 
-impl<C: HasSlot<Blind>> Policy<C> for Blind {
+impl<C: HasSlot<Blind>> Policy<C> for Blind {}
+
+impl<C: HasSlot<Blind>> Hooks<C> for Blind {
     fn may_handle(_ctx: &Ctx, _state: &[u8]) -> Result<(), Refusal> {
         panic!("a role that does not watch state was asked before the handler");
     }
@@ -156,7 +162,9 @@ impl Role for Idle {
     type Slot = AuthoritySlot;
 }
 
-impl<C: HasSlot<Idle>> Policy<C> for Idle {
+impl<C: HasSlot<Idle>> Policy<C> for Idle {}
+
+impl<C: HasSlot<Idle>> Hooks<C> for Idle {
     const WATCHES_STATE: bool = true;
 }
 

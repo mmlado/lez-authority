@@ -1,14 +1,13 @@
 //! The messages a guarded handler receives: the program's own and the library's.
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use lee_core::account::AccountId;
-use lee_core::program::PdaSeed;
+use lee_core::account::{AccountId, Actor};
+use lee_core::program::{PdaSeed, Response};
+use lez_authority_core::Role;
 use std::io::{Read, Write};
 
-use crate::*;
-
 /// A management operation on a role's slot. A client sends it as a library message, the
-/// guard runs it under the role's [`Policy`], and the handler never sees it. Its encoding is
+/// guard runs it under the role's rules, and the handler never sees it. Its encoding is
 /// Borsh's, except that the bytes of [`Op::Own`] carry no length and run to the end of the
 /// message, so an `Op` is always the last thing in one.
 #[derive(BorshSerialize, BorshDeserialize, Clone, Debug, PartialEq, Eq)]
@@ -31,7 +30,7 @@ pub enum Op {
     /// holder part stays renounced for good. Whatever else the role keeps in its slot stays.
     Renounce,
     /// One of the operations the role defines for itself, such as a freeze, encoded as the
-    /// role encodes it. [`Policy::operate`] runs it.
+    /// role encodes it, which the guard hands to the role.
     Own(
         // A length in front would hide the role's type from an IDL, so the bytes run to the end.
         #[borsh(
@@ -84,13 +83,11 @@ pub enum LibraryMessage {
     /// the config.
     Clearance(Clearance),
     /// A role's own message, from the config to the role's own actor for `key`, which hands it
-    /// to the role's [`Policy::receive`] with that actor's state. The handler never sees it. A
-    /// role builds one with [`Ctx::own_message`].
+    /// to the role with that actor's state. The handler never sees it.
     Own {
         /// The role's [`Role::NAME`].
         role: String,
-        /// The key the role's own actor is derived from, with the role and the config, as
-        /// [`own_actor`] derives it.
+        /// The key the role's own actor is derived from, with the role and the config.
         key: [u8; 32],
         /// The message, encoded as the role encodes it. Its bytes carry no length and run to the
         /// end of the message, as those of [`Op::Own`] do.
@@ -111,6 +108,20 @@ pub(crate) fn own_message_role(bytes: &[u8]) -> Option<String> {
         Ok(Wire::<()>::Library(LibraryMessage::Own { role, .. })) => Some(role),
         _ => None,
     }
+}
+
+/// Every message `response` sends, sync and async, with its receiver.
+pub(crate) fn sent(response: &Response) -> impl Iterator<Item = (Actor, &[u8])> {
+    let sync = response
+        .sync_messages
+        .iter()
+        .map(|sent| (sent.to, sent.message.as_slice()));
+    sync.chain(
+        response
+            .async_messages
+            .iter()
+            .map(|sent| (sent.to, sent.message.as_slice())),
+    )
 }
 
 /// What a request for clearance says: only whether the sending actor's own account authorized
@@ -181,7 +192,7 @@ impl<M: BorshDeserialize> BorshDeserialize for Wire<M> {
 /// What the program's messages declare to the guard. Derive it with `#[only(Role)]` on a
 /// message that needs a role's holder, the way `onlyOwner` marks a Solidity function,
 /// `#[from_config]` on one that only the config account may send, and `#[exempt(Role)]` on one
-/// that runs where that role's [`Policy::may_run`] would refuse it, though a role that watches
+/// that runs where that role's consent would refuse it, though a role that watches
 /// state still looks at the state around its handler. The derive compares roles by
 /// [`Role::NAME`], as the guard does, so a role crate linked twice is still one role. A
 /// hand-written impl does the same and lists its roles in [`Gated::MARKED`].
@@ -216,8 +227,8 @@ pub trait Gated {
         false
     }
 
-    /// Whether this message runs where role `R`'s [`Policy::may_run`] would refuse it, as an
-    /// exempt message runs through a freeze. The mark covers this message only.
+    /// Whether this message runs where role `R`'s consent would refuse it, as an exempt message
+    /// runs through a freeze. The mark covers this message only.
     fn exempt<R: Role>(&self) -> bool {
         false
     }
