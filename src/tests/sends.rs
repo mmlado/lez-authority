@@ -508,8 +508,11 @@ fn refused_in_program<G: Roles<RootAndSending, Note> + 'static>() {
     for mark in IN_PROGRAM {
         let consent = straight::<G>(&sending(mark), Note::Open);
         assert_eq!(consent.err(), refused, "{guard}, mark {mark}, consent");
-        let clearance = cleared::<G>(seat_of(KEY), true, &sending(mark));
-        assert_eq!(clearance.err(), refused, "{guard}, mark {mark}, clearance");
+        // The handler sends nothing at this seat, so its request is the only one.
+        for authorized in [true, false] {
+            let clearance = cleared::<G>(seat_of(OTHER), authorized, &sending(mark));
+            assert_eq!(clearance.err(), refused, "{guard}, mark {mark}, clearance");
+        }
         let operated = through_seat::<G>(KEY, &sending(1), own_op(mark));
         assert_eq!(operated.err(), refused, "{guard}, mark {mark}, operation");
     }

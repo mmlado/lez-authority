@@ -208,7 +208,8 @@ fn other_program(input: &ReceiveInput) -> Result<Response, Refusal> {
 
 /// One transaction over `pre` in a world whose program is the guard of `Rs` around `handler`:
 /// `message` at `root`, signed by `signers`, reaching `reached` beside the config, the actors
-/// that hold state and each signer's seat. Every delivery, or the refusal that refuses all of it.
+/// that hold state and each signer's seat. It vouches for the accounts of `root`, the config and
+/// `reached`. Every delivery, or the refusal that refuses all of it.
 fn deliver<Rs, C, M>(
     pre: &States,
     root: Actor,
