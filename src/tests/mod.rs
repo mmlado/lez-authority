@@ -180,23 +180,6 @@ fn config_actor() -> Actor {
     Actor::new(config_account(PROGRAM, &SEED), PROGRAM)
 }
 
-fn at(
-    receiver: Actor,
-    from: Option<Actor>,
-    authorized: bool,
-    pre: Option<&Two>,
-    message: Wire<Msg>,
-) -> Result<Response, Refusal> {
-    let input = ReceiveInput {
-        receiver,
-        from,
-        is_authorized: authorized,
-        pre_state: ActorState::from(pre.map(|c| borsh::to_vec(c).unwrap()).unwrap_or_default()),
-        message: borsh::to_vec(&message).unwrap(),
-    };
-    try_guard::<(First, Second), Two, Msg>(&input, &SEED, InitGate::Deployer, message, handle)
-}
-
 /// Every actor's state between transactions.
 type States = BTreeMap<Actor, Vec<u8>>;
 
@@ -532,21 +515,6 @@ where
     try_guard::<Rs, C, M>(&input, &SEED, InitGate::Deployer, message, handler)
 }
 
-/// Runs `message` at `receiver` of a program with the roles `(First, Marking)`.
-fn at_marked_with<M>(
-    receiver: Actor,
-    from: Option<Actor>,
-    authorized: bool,
-    pre: Option<&RootAndMark>,
-    message: Wire<M>,
-    handler: fn(&ReceiveInput, M) -> Response,
-) -> Result<Response, Refusal>
-where
-    M: Gated + BorshSerialize + BorshDeserialize,
-{
-    at_with::<(First, Marking), RootAndMark, M>(receiver, from, authorized, pre, message, handler)
-}
-
 /// From `sender`'s seat to the config of a program with the roles `(First, Marking)`. The
 /// config as written back.
 fn send_marked(
@@ -587,6 +555,7 @@ enum Halt {
     FromConfig,
     FromConfigExempt,
     WriteAndSend,
+    Pass { to: Actor, bytes: Vec<u8> },
 }
 
 impl Gated for Halt {
@@ -602,12 +571,17 @@ impl Gated for Halt {
     fn exempt<R: Role>(&self) -> bool {
         matches!(
             self,
-            Halt::Exempt | Halt::GatedExempt | Halt::ExemptTouch | Halt::FromConfigExempt
+            Halt::Exempt
+                | Halt::GatedExempt
+                | Halt::ExemptTouch
+                | Halt::FromConfigExempt
+                | Halt::Pass { .. }
         ) && std::any::TypeId::of::<R>() == std::any::TypeId::of::<Marking>()
     }
 }
 
-/// Keeps the config, but for `ExemptTouch`, which moves the marking role's mark.
+/// Keeps the config, but for `ExemptTouch`, which moves the marking role's mark. `Pass` sends
+/// its bytes on, so a test chooses the sender of a message.
 fn halt(input: &ReceiveInput, message: Halt) -> Response {
     if let Halt::ExemptTouch = message {
         let mut config: RootAndMark = borsh::from_slice(&input.pre_state).unwrap();
@@ -616,6 +590,15 @@ fn halt(input: &ReceiveInput, message: Halt) -> Response {
     }
     if let Halt::WriteAndSend = message {
         return Response::set_state(vec![7]).send_sync(seat_of(OTHER), &Wire::Program(Halt::Open));
+    }
+    if let Halt::Pass { to, bytes } = message {
+        let mut response = Response::keep_state();
+        response.sync_messages.push(SyncMessage {
+            to,
+            message: bytes,
+            pda_seeds: BTreeSet::new(),
+        });
+        return response;
     }
     Response::keep_state()
 }
