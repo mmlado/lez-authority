@@ -6,16 +6,21 @@ fn never(_input: &ReceiveInput, _message: SetMark) -> Response {
     unreachable!("a refused message never reaches the handler")
 }
 
+/// `message` at `root` of a program with the roles `(First, Marking)`. What the config answered.
+fn halt_at(
+    pre: Option<&RootAndMark>,
+    root: Actor,
+    signers: &[AccountId],
+    message: Halt,
+) -> Result<Response, Refusal> {
+    let message = Wire::Program(message);
+    run_with::<(First, Marking), _, _>(pre, root, signers, message, &[], halt)
+        .map(|trace| response_at(&trace, config_actor()))
+}
+
 /// `message` sent straight to the config.
 fn straight(pre: &RootAndMark, message: Halt) -> Result<Response, Refusal> {
-    at_marked_with(
-        config_actor(),
-        None,
-        false,
-        Some(pre),
-        Wire::Program(message),
-        halt,
-    )
+    halt_at(Some(pre), config_actor(), &[], message)
 }
 
 /// `message` from `sender`'s seat to the config.
@@ -24,23 +29,7 @@ fn halt_through_seat(
     pre: &RootAndMark,
     message: Halt,
 ) -> Result<Response, Refusal> {
-    let hop = at_marked_with(
-        seat_of(sender),
-        None,
-        true,
-        None,
-        Wire::Program(message),
-        halt,
-    )?;
-    let hop: Wire<Halt> = borsh::from_slice(&hop.sync_messages[0].message).unwrap();
-    at_marked_with(
-        config_actor(),
-        Some(seat_of(sender)),
-        false,
-        Some(pre),
-        hop,
-        halt,
-    )
+    halt_at(Some(pre), seat_of(sender), &[sender], message)
 }
 
 #[test]
@@ -101,15 +90,7 @@ fn a_role_s_rules_never_see_a_management_operation() {
 #[test]
 fn before_init_an_exempt_message_at_the_config_is_refused_too() {
     assert_eq!(
-        at_marked_with(
-            config_actor(),
-            None,
-            false,
-            None,
-            Wire::Program(Halt::Exempt),
-            halt
-        )
-        .err(),
+        halt_at(None, config_actor(), &[], Halt::Exempt).err(),
         Some(Refusal::of::<First>(AuthorityError::NotInitialized))
     );
 }
@@ -129,20 +110,15 @@ fn a_role_s_rules_answer_before_the_handler_runs() {
 
 #[test]
 fn an_exempt_message_at_a_config_that_does_not_decode_is_refused() {
-    let message = Wire::Program(Halt::Exempt);
-    let input = ReceiveInput {
-        receiver: config_actor(),
-        from: None,
-        is_authorized: false,
-        pre_state: ActorState::from(vec![9]),
-        message: borsh::to_vec(&message).unwrap(),
-    };
+    let message = borsh::to_vec(&Wire::Program(Halt::Exempt)).unwrap();
+    let broken = States::from([(config_actor(), vec![9])]);
     assert_eq!(
-        try_guard::<(First, Marking), RootAndMark, Halt>(
-            &input,
-            &SEED,
-            InitGate::Deployer,
+        deliver::<(First, Marking), RootAndMark, Halt>(
+            &broken,
+            config_actor(),
+            &[],
             message,
+            &[],
             halt
         )
         .err(),
@@ -151,40 +127,21 @@ fn an_exempt_message_at_a_config_that_does_not_decode_is_refused() {
 }
 
 /// `message` sent straight to the config of a program with the roles `Rs`.
-fn ask<Rs: Roles<Marks, Ask>>(pre: &Marks, message: Ask) -> Result<Response, Refusal> {
-    at_with::<Rs, Marks, Ask>(
-        config_actor(),
-        None,
-        false,
-        Some(pre),
-        Wire::Program(message),
-        keep,
-    )
+fn ask<Rs: Roles<Marks, Ask> + 'static>(pre: &Marks, message: Ask) -> Result<Response, Refusal> {
+    let message = Wire::Program(message);
+    run_with::<Rs, Marks, Ask>(Some(pre), config_actor(), &[], message, &[], keep)
+        .map(|trace| response_at(&trace, config_actor()))
 }
 
 /// `message` from `sender`'s seat to the config of a program with the roles `Both`.
-fn ask_through_seat<Both: Roles<Marks, Ask>>(
+fn ask_through_seat<Both: Roles<Marks, Ask> + 'static>(
     sender: AccountId,
     pre: &Marks,
     message: Ask,
 ) -> Result<Response, Refusal> {
-    let hop = at_with::<Both, Marks, Ask>(
-        seat_of(sender),
-        None,
-        true,
-        None,
-        Wire::Program(message),
-        keep,
-    )?;
-    let hop: Wire<Ask> = borsh::from_slice(&hop.sync_messages[0].message).unwrap();
-    at_with::<Both, Marks, Ask>(
-        config_actor(),
-        Some(seat_of(sender)),
-        false,
-        Some(pre),
-        hop,
-        keep,
-    )
+    let message = Wire::Program(message);
+    run_with::<Both, Marks, Ask>(Some(pre), seat_of(sender), &[sender], message, &[], keep)
+        .map(|trace| response_at(&trace, config_actor()))
 }
 
 #[test]

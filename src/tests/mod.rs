@@ -272,6 +272,24 @@ fn states<C: BorshSerialize>(config: Option<&C>) -> States {
         .collect()
 }
 
+/// [`deliver`] with `message` encoded, over the config `pre` holds, or none.
+fn run_with<Rs, C, M>(
+    pre: Option<&C>,
+    root: Actor,
+    signers: &[AccountId],
+    message: Wire<M>,
+    reached: &[Actor],
+    handler: fn(&ReceiveInput, M) -> Response,
+) -> Result<Vec<Transition>, Refusal>
+where
+    Rs: Roles<C, M> + 'static,
+    C: BorshSerialize + BorshDeserialize + Default + 'static,
+    M: Gated + BorshSerialize + BorshDeserialize + 'static,
+{
+    let message = borsh::to_vec(&message).unwrap();
+    deliver::<Rs, C, M>(&states(pre), root, signers, message, reached, handler)
+}
+
 /// The first delivery at `actor` in `trace`.
 fn step_at(trace: &[Transition], actor: Actor) -> &Transition {
     let step = trace.iter().find(|step| step.input.receiver == actor);
@@ -440,25 +458,19 @@ fn marked(authority_slot: AuthoritySlot) -> WithMark {
     })
 }
 
-/// Runs `handler` at the config, with `pre` as the config's state.
+/// `SetMark(mark)` sent straight to the config `pre` of a program with the roles `Rs` around
+/// `handler`.
 fn at_config_with<Rs, C>(
     pre: &C,
     mark: u64,
     handler: fn(&ReceiveInput, SetMark) -> Response,
 ) -> Option<Refusal>
 where
-    Rs: Roles<C, SetMark>,
-    C: BorshSerialize + BorshDeserialize + Default,
+    Rs: Roles<C, SetMark> + 'static,
+    C: BorshSerialize + BorshDeserialize + Default + 'static,
 {
     let message = Wire::Program(SetMark(mark));
-    let input = ReceiveInput {
-        receiver: config_actor(),
-        from: None,
-        is_authorized: false,
-        pre_state: ActorState::from(borsh::to_vec(pre).unwrap()),
-        message: borsh::to_vec(&message).unwrap(),
-    };
-    try_guard::<Rs, C, SetMark>(&input, &SEED, InitGate::Deployer, message, handler).err()
+    run_with::<Rs, C, SetMark>(Some(pre), config_actor(), &[], message, &[], handler).err()
 }
 
 /// The freeze's shape: a root role that keeps only its holder, and a second that keeps more.
@@ -535,16 +547,6 @@ where
     at_with::<(First, Marking), RootAndMark, M>(receiver, from, authorized, pre, message, handler)
 }
 
-fn at_marked(
-    receiver: Actor,
-    from: Option<Actor>,
-    authorized: bool,
-    pre: Option<&RootAndMark>,
-    message: Wire<SetMark>,
-) -> Result<Response, Refusal> {
-    at_marked_with(receiver, from, authorized, pre, message, keep)
-}
-
 /// From `sender`'s seat to the config of a program with the roles `(First, Marking)`. The
 /// config as written back.
 fn send_marked(
@@ -552,9 +554,9 @@ fn send_marked(
     pre: Option<&RootAndMark>,
     message: Wire<SetMark>,
 ) -> Result<RootAndMark, Refusal> {
-    let hop = at_marked(seat_of(sender), None, true, None, message)?;
-    let hop: Wire<SetMark> = borsh::from_slice(&hop.sync_messages[0].message).unwrap();
-    let response = at_marked(config_actor(), Some(seat_of(sender)), false, pre, hop)?;
+    let seat = seat_of(sender);
+    let trace = run_with::<(First, Marking), _, _>(pre, seat, &[sender], message, &[], keep)?;
+    let response = response_at(&trace, config_actor());
     Ok(borsh::from_slice(response.post_state.as_ref().unwrap()).unwrap())
 }
 

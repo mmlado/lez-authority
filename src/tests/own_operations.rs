@@ -91,12 +91,13 @@ fn before_the_root_role_s_init_no_operation_of_a_role_s_own_runs() {
 #[test]
 fn a_role_s_own_operation_sent_straight_to_the_config_is_refused_in_its_name() {
     assert_eq!(
-        at_marked(
-            config_actor(),
-            None,
-            false,
+        run_with::<(First, Marking), _, _>(
             Some(&root_and_mark()),
-            set_mark_op(9)
+            config_actor(),
+            &[],
+            set_mark_op(9),
+            &[],
+            keep
         )
         .err(),
         Some(Refusal::of::<Marking>(AuthorityError::NotThroughSeat))
