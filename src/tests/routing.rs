@@ -80,11 +80,10 @@ fn the_first_roles_holder_does_not_hold_the_second() {
 
 #[test]
 fn require_refuses_a_message_that_skipped_the_seat() {
-    let refused = at(
-        config_actor(),
-        None,
-        false,
+    let refused = run(
         Some(&two(Some(KEY))),
+        config_actor(),
+        &[],
         Msg::GatedValue(3).into(),
     )
     .err();
@@ -199,11 +198,10 @@ fn the_first_role_stays_renounced_and_takes_the_second_with_it() {
 
 #[test]
 fn a_handler_that_changes_the_second_slot_is_refused_by_its_name() {
-    let refused = at(
-        config_actor(),
-        None,
-        false,
+    let refused = run(
         Some(&two(Some(KEY))),
+        config_actor(),
+        &[],
         Msg::ClearSecond.into(),
     )
     .err();
@@ -215,20 +213,18 @@ fn a_handler_that_changes_the_second_slot_is_refused_by_its_name() {
 
 #[test]
 fn an_open_message_runs_where_it_is_sent() {
-    let at_config = at(
-        config_actor(),
-        None,
-        false,
+    let trace = run(
         Some(&two(None)),
+        config_actor(),
+        &[],
         Msg::SetValue(4).into(),
     )
-    .ok()
     .unwrap();
+    let at_config = response_at(&trace, config_actor());
     let config: Two = borsh::from_slice(at_config.post_state.as_ref().unwrap()).unwrap();
     assert_eq!(config.value, 4);
-    let elsewhere = at(seat_of(KEY), None, false, None, Msg::SetValue(6).into())
-        .ok()
-        .unwrap();
+    let trace = run(None, seat_of(KEY), &[], Msg::SetValue(6).into()).unwrap();
+    let elsewhere = response_at(&trace, seat_of(KEY));
     assert!(elsewhere.sync_messages.is_empty(), "nothing was forwarded");
     let state: Two = borsh::from_slice(elsewhere.post_state.as_ref().unwrap()).unwrap();
     assert_eq!(state.value, 6);
@@ -237,7 +233,7 @@ fn an_open_message_runs_where_it_is_sent() {
 #[test]
 fn before_init_even_an_open_message_at_the_config_is_refused() {
     assert_eq!(
-        at(config_actor(), None, false, None, Msg::SetValue(4).into()).err(),
+        run(None, config_actor(), &[], Msg::SetValue(4).into()).err(),
         Some(Refusal::of::<First>(AuthorityError::NotInitialized))
     );
 }
@@ -245,42 +241,43 @@ fn before_init_even_an_open_message_at_the_config_is_refused() {
 #[test]
 fn the_config_reaches_another_actor_of_the_program() {
     let target = AccountId::new([7; 32]);
-    let response = through_seat(KEY, Some(&two(Some(KEY))), Msg::ToTarget(target).into())
-        .ok()
-        .unwrap();
+    let trace = run(
+        Some(&two(Some(KEY))),
+        seat_of(KEY),
+        &[KEY],
+        Msg::ToTarget(target).into(),
+    )
+    .unwrap();
+    let response = response_at(&trace, config_actor());
     let [sent] = response.sync_messages.as_slice() else {
         panic!("one message to the target");
     };
     assert_eq!(sent.to, Actor::new(target, PROGRAM));
-    let mark: Wire<Msg> = borsh::from_slice(&sent.message).unwrap();
-    let at_target = at(sent.to, Some(config_actor()), false, None, mark)
-        .ok()
-        .unwrap();
-    assert_eq!(at_target.post_state.as_deref(), Some(&[1u8][..]));
-    assert!(at_target.sync_messages.is_empty());
+    let at_target = step_at(&trace, sent.to);
+    assert_eq!(at_target.input.from, Some(config_actor()));
+    assert!(!at_target.input.is_authorized);
+    assert_eq!(at_target.response.post_state.as_deref(), Some(&[1u8][..]));
+    assert!(at_target.response.sync_messages.is_empty());
 }
 
 #[test]
 fn a_config_only_message_from_anyone_else_is_refused() {
     let target = Actor::new(AccountId::new([7; 32]), PROGRAM);
     let refused = Some(Refusal::of::<First>(AuthorityError::NotFromConfig));
+    let signed = [target.account_id];
+    assert_eq!(run(None, target, &signed, Msg::Mark.into()).err(), refused);
+    let pass = |to: Actor| {
+        Wire::Program(Msg::Pass {
+            to: to.account_id,
+            bytes: borsh::to_vec(&Wire::Program(Msg::Mark)).unwrap(),
+        })
+    };
     assert_eq!(
-        at(target, None, true, None, Msg::Mark.into()).err(),
+        run(None, seat_of(KEY), &signed, pass(target)).err(),
         refused
     );
     assert_eq!(
-        at(target, Some(seat_of(KEY)), true, None, Msg::Mark.into()).err(),
-        refused
-    );
-    assert_eq!(
-        at(
-            config_actor(),
-            Some(config_actor()),
-            false,
-            Some(&two(None)),
-            Msg::Mark.into()
-        )
-        .err(),
+        run(Some(&two(None)), config_actor(), &[], pass(config_actor())).err(),
         refused
     );
 }
@@ -301,7 +298,7 @@ fn a_vouched_message_may_call_another_program() {
 fn an_operation_sent_straight_to_the_config_is_refused() {
     let nominate = Wire::op::<First>(Op::Nominate { next: KEY });
     assert_eq!(
-        at(config_actor(), None, false, Some(&two(None)), nominate).err(),
+        run(Some(&two(None)), config_actor(), &[], nominate).err(),
         Some(Refusal::of::<First>(AuthorityError::NotThroughSeat))
     );
 }
@@ -309,7 +306,7 @@ fn an_operation_sent_straight_to_the_config_is_refused() {
 #[test]
 fn an_unsigned_sender_is_refused_at_its_seat() {
     assert_eq!(
-        at(seat_of(KEY), None, false, None, Wire::op::<First>(Op::Init)).err(),
+        run(None, seat_of(KEY), &[], Wire::op::<First>(Op::Init)).err(),
         Some(Refusal::of::<First>(AuthorityError::MissingSignature))
     );
 }
@@ -321,12 +318,18 @@ fn a_forward_from_another_program_is_refused() {
         inner: borsh::to_vec(&Wire::<Msg>::op::<First>(Op::Init)).unwrap(),
     }));
     let foreign = Actor::new(KEY, ELSEWHERE);
+    let sent_on = (
+        config_actor(),
+        borsh::to_vec(&hop).unwrap(),
+        None::<PdaSeed>,
+    );
+    let through = borsh::to_vec(&sent_on).unwrap();
     assert_eq!(
-        at(config_actor(), Some(foreign), false, None, hop.clone()).err(),
+        run_bytes(None, foreign, &[], through, &[]).err(),
         Some(Refusal::of::<First>(AuthorityError::NotOwnProgram))
     );
     assert_eq!(
-        at(seat_of(KEY), Some(seat_of(OTHER)), true, None, hop).err(),
+        run(None, seat_of(KEY), &[KEY], hop).err(),
         Some(Refusal::of::<First>(AuthorityError::ForwardedNotAtConfig))
     );
 }
@@ -342,7 +345,7 @@ fn a_handler_cannot_forge_a_hop() {
         bytes: borsh::to_vec(&hop).unwrap(),
     };
     assert_eq!(
-        at(seat_of(PROGRAM), None, false, None, pass.into()).err(),
+        run(None, seat_of(PROGRAM), &[], pass.into()).err(),
         Some(Refusal::of::<First>(AuthorityError::LibrarySend))
     );
 }
@@ -358,7 +361,7 @@ fn a_handler_cannot_forge_a_hop_through_an_async_message() {
         bytes: borsh::to_vec(&hop).unwrap(),
     };
     assert_eq!(
-        at(seat_of(PROGRAM), None, false, None, pass.into()).err(),
+        run(None, seat_of(PROGRAM), &[], pass.into()).err(),
         Some(Refusal::of::<First>(AuthorityError::LibrarySend))
     );
 }
@@ -370,7 +373,7 @@ fn a_handler_at_the_config_cannot_send_it_a_library_message() {
         bytes: borsh::to_vec(&Wire::<Msg>::op::<First>(Op::Renounce)).unwrap(),
     };
     assert_eq!(
-        at(config_actor(), None, false, Some(&two(None)), pass.into()).err(),
+        run(Some(&two(None)), config_actor(), &[], pass.into()).err(),
         Some(Refusal::of::<First>(AuthorityError::LibrarySend))
     );
 }

@@ -1210,6 +1210,7 @@ dependencies = [
  "lee_core",
  "lez-authority-core",
  "lez-authority-macros",
+ "lez-authority-world",
  "risc0-zkvm",
 ]
 
