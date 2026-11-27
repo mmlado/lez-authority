@@ -270,6 +270,7 @@ enum Write {
     SendOn(Actor, Vec<u8>),
 }
 
+// By hand: it runs under guards that do not list the watching role.
 impl Gated for Write {
     fn needs<R: Role>(&self) -> bool {
         matches!(self, Write::Gated(_))

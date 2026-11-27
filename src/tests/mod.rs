@@ -102,29 +102,26 @@ impl HasSlot<Second> for Two {
     }
 }
 
-#[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
+#[derive(Clone, Debug, BorshSerialize, BorshDeserialize, Gated)]
 enum Msg {
     SetValue(u64),
+    #[only(Second)]
     GatedValue(u64),
     ClearSecond,
+    #[only(Second)]
     ToTarget(AccountId),
+    #[only(Second)]
     ToElsewhere(AccountId),
+    #[from_config]
     Mark,
-    Pass { to: AccountId, bytes: Vec<u8> },
-    PassAsync { to: AccountId, bytes: Vec<u8> },
-}
-
-impl Gated for Msg {
-    fn needs<R: Role>(&self) -> bool {
-        matches!(
-            self,
-            Msg::GatedValue(_) | Msg::ToTarget(_) | Msg::ToElsewhere(_)
-        ) && std::any::TypeId::of::<R>() == std::any::TypeId::of::<Second>()
-    }
-
-    fn only_from_config(&self) -> bool {
-        matches!(self, Msg::Mark)
-    }
+    Pass {
+        to: AccountId,
+        bytes: Vec<u8>,
+    },
+    PassAsync {
+        to: AccountId,
+        bytes: Vec<u8>,
+    },
 }
 
 /// A plain LEZ handler: the config where it runs, its own state anywhere else.
@@ -554,39 +551,29 @@ fn root_and_mark() -> RootAndMark {
 
 /// A program message for `(First, Marking)`: open or needing the first role's holder, and
 /// exempt from the marking role's rules or not.
-#[derive(BorshSerialize, BorshDeserialize)]
+#[derive(BorshSerialize, BorshDeserialize, Gated)]
 enum Halt {
     Open,
+    #[only(First)]
     Gated,
+    #[exempt(Marking)]
     Exempt,
+    #[only(First)]
+    #[exempt(Marking)]
     GatedExempt,
+    #[exempt(Marking)]
     ExemptTouch,
+    #[from_config]
     FromConfig,
+    #[from_config]
+    #[exempt(Marking)]
     FromConfigExempt,
     WriteAndSend,
-    Pass { to: Actor, bytes: Vec<u8> },
-}
-
-impl Gated for Halt {
-    fn needs<R: Role>(&self) -> bool {
-        matches!(self, Halt::Gated | Halt::GatedExempt)
-            && std::any::TypeId::of::<R>() == std::any::TypeId::of::<First>()
-    }
-
-    fn only_from_config(&self) -> bool {
-        matches!(self, Halt::FromConfig | Halt::FromConfigExempt)
-    }
-
-    fn exempt<R: Role>(&self) -> bool {
-        matches!(
-            self,
-            Halt::Exempt
-                | Halt::GatedExempt
-                | Halt::ExemptTouch
-                | Halt::FromConfigExempt
-                | Halt::Pass { .. }
-        ) && std::any::TypeId::of::<R>() == std::any::TypeId::of::<Marking>()
-    }
+    #[exempt(Marking)]
+    Pass {
+        to: Actor,
+        bytes: Vec<u8>,
+    },
 }
 
 /// Keeps the config, but for `ExemptTouch`, which moves the marking role's mark. `Pass` sends
@@ -694,6 +681,7 @@ enum Ask {
     GatedMarking,
 }
 
+// By hand: it runs under guards that do not list both of its roles.
 impl Gated for Ask {
     fn needs<R: Role>(&self) -> bool {
         matches!(self, Ask::GatedMarking)

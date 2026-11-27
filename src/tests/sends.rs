@@ -271,6 +271,7 @@ enum Note {
     Exempt,
 }
 
+// By hand: it runs under a guard that does not list the first role.
 impl Gated for Note {
     fn needs<R: Role>(&self) -> bool {
         matches!(self, Note::Gated)
@@ -834,7 +835,7 @@ fn an_own_message_inside_a_hop_does_not_decode() {
 
 /// A handler that sends the role's own message to its own actor, sync or async, to the config,
 /// sync or async, or to another program, or that sends a seat the role's operation.
-#[derive(BorshSerialize, BorshDeserialize)]
+#[derive(BorshSerialize, BorshDeserialize, Gated)]
 enum Forge {
     ToMarker,
     AsyncToMarker,
@@ -843,8 +844,6 @@ enum Forge {
     Elsewhere,
     OpToSeat,
 }
-
-impl Gated for Forge {}
 
 fn forged_own() -> Wire<()> {
     own::<Sending, ()>(MARKER_KEY, vec![2])
