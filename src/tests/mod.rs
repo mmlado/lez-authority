@@ -498,7 +498,8 @@ fn keep<M>(_input: &ReceiveInput, _message: M) -> Response {
     Response::keep_state()
 }
 
-/// Runs `message` at `receiver` of a program with the roles `Rs` and the config `C`.
+/// The guard at `receiver` of a program with the roles `Rs` and the config `C`, for an input
+/// no transaction carries.
 fn at_with<Rs, C, M>(
     receiver: Actor,
     from: Option<Actor>,

@@ -37,9 +37,22 @@ const UNSET: AuthorityError = AuthorityError::Role {
 
 impl<C: HasSlot<Watching>> Policy<C> for Watching {}
 
+/// The key of the watching role's own actor.
+const OWN_KEY: [u8; 32] = [7; 32];
+
 impl<C: HasSlot<Watching>> Hooks<C> for Watching {
     const REFUSES_MESSAGES: bool = true;
     const WATCHES_STATE: bool = true;
+
+    // Its own operation sends its bytes to its own actor as its own message.
+    fn operate(
+        ctx: &Ctx,
+        config: &C,
+        op: &[u8],
+    ) -> Result<(AuthoritySlot, Vec<SyncMessage>), Refusal> {
+        let own = ctx.own_message::<Watching>(OWN_KEY, op.to_vec());
+        Ok((HasSlot::<Watching>::slot(config).clone(), vec![own]))
+    }
 
     fn may_run(_ctx: &Ctx, config: &C) -> Result<Vec<SyncMessage>, Refusal> {
         if matches!(HasSlot::<Watching>::slot(config), AuthoritySlot::Unset) {
@@ -254,6 +267,7 @@ enum Write {
     Own(Vec<u8>),
     Pass(Vec<u8>),
     Panic,
+    SendOn(Actor, Vec<u8>),
 }
 
 impl Gated for Write {
@@ -267,7 +281,7 @@ impl Gated for Write {
     }
 
     fn exempt<R: Role>(&self) -> bool {
-        matches!(self, Write::Exempt(_))
+        matches!(self, Write::Exempt(_) | Write::SendOn(..))
             && std::any::TypeId::of::<R>() == std::any::TypeId::of::<Watching>()
     }
 }
@@ -275,6 +289,7 @@ impl Gated for Write {
 /// Writes the bytes it is given, or the config with a new head. `Leak` also sends the config a
 /// library message, `Own` sends a seat the watching role's own message, `Pass` sends a seat a
 /// program message, and `Panic` panics, as a handler that cannot read a marked state would.
+/// `SendOn` sends its bytes to an actor, so a test chooses the sender of a message.
 fn write(input: &ReceiveInput, message: Write) -> Response {
     match message {
         Write::Keep => Response::keep_state(),
@@ -300,6 +315,15 @@ fn write(input: &ReceiveInput, message: Write) -> Response {
         ),
         Write::Pass(bytes) => Response::set_state(bytes).send_sync(seat_of(KEY), &Write::Keep),
         Write::Panic => panic!("the handler ran"),
+        Write::SendOn(to, bytes) => {
+            let mut response = Response::keep_state();
+            response.sync_messages.push(SyncMessage {
+                to,
+                message: bytes,
+                pda_seeds: BTreeSet::new(),
+            });
+            response
+        }
     }
 }
 
@@ -307,32 +331,80 @@ type WatchSecond = (First, Watching);
 type WatchFirst = (Watching, First);
 type WatchAlone = (Watching,);
 
-fn at<G: Roles<Watched, Write>>(
+/// The watching role's own actor.
+fn watching_s_actor() -> Actor {
+    own_actor::<Watching>(config_actor(), &OWN_KEY)
+}
+
+/// One transaction of the guard `G` around `write` over `pre`: `message` at `root`, signed by
+/// `signers`. Every delivery.
+fn transact<G: Roles<Watched, Write> + 'static>(
+    pre: &States,
+    root: Actor,
+    signers: &[AccountId],
+    message: Vec<u8>,
+) -> Result<Vec<Transition>, Refusal> {
+    let reached = [seat_of(KEY), seat_of(OTHER), watching_s_actor()];
+    deliver::<G, Watched, Write>(pre, root, signers, message, &reached, write)
+}
+
+/// `message` handled at `receiver` over its state `pre`, sent by `from` and signed by
+/// `receiver`'s account when `authorized`. Away from the config, the config is one that clears.
+/// What the guard returned at `receiver`.
+fn at<G: Roles<Watched, Write> + 'static>(
     receiver: Actor,
     from: Option<Actor>,
     authorized: bool,
     pre: &[u8],
     message: Wire<Write>,
 ) -> Result<Response, Refusal> {
-    let input = ReceiveInput {
-        receiver,
-        from,
-        is_authorized: authorized,
-        pre_state: ActorState::from(pre.to_vec()),
-        message: borsh::to_vec(&message).unwrap(),
+    let mut states = States::from([(config_actor(), config(*b"none"))]);
+    states.insert(receiver, pre.to_vec());
+    states.retain(|_, state| !state.is_empty());
+    let message = borsh::to_vec(&message).unwrap();
+    let (root, sent) = match from {
+        None => (receiver, message.clone()),
+        Some(sender) if sender.program_account_id == PROGRAM => {
+            let send_on = Wire::Program(Write::SendOn(receiver, message.clone()));
+            (sender, borsh::to_vec(&send_on).unwrap())
+        }
+        Some(sender) => (sender, sent_on(receiver, &message)),
     };
-    try_guard::<G, Watched, Write>(&input, &SEED, InitGate::Deployer, message, write)
+    let signers = if authorized {
+        vec![receiver.account_id]
+    } else {
+        Vec::new()
+    };
+    let trace = transact::<G>(&states, root, &signers, sent)?;
+    let step = trace
+        .iter()
+        .find(|step| step.input.receiver == receiver && step.input.message == message)
+        .expect("the message reached its actor");
+    assert_eq!(step.input.from, from);
+    assert_eq!(step.input.is_authorized, authorized);
+    Ok(step.response.clone())
 }
 
-/// From `sender`'s seat to the config. What the config answered.
-fn through_seat<G: Roles<Watched, Write>>(
+/// From `sender`'s seat to the config `pre`. What the config answered.
+fn through_seat<G: Roles<Watched, Write> + 'static>(
     sender: AccountId,
     pre: &[u8],
     message: Wire<Write>,
 ) -> Result<Response, Refusal> {
-    let hop = at::<G>(seat_of(sender), None, true, b"", message)?;
-    let hop: Wire<Write> = borsh::from_slice(&hop.sync_messages[0].message).unwrap();
-    at::<G>(config_actor(), Some(seat_of(sender)), false, pre, hop)
+    let states = States::from([(config_actor(), pre.to_vec())]);
+    let message = borsh::to_vec(&message).unwrap();
+    transact::<G>(&states, seat_of(sender), &[sender], message)
+        .map(|trace| response_at(&trace, config_actor()))
+}
+
+/// The request for clearance of a message `KEY` signed at its seat, answered at the config `pre`.
+fn cleared<G: Roles<Watched, Write> + 'static>(pre: &[u8]) -> Result<Response, Refusal> {
+    let states = States::from([(config_actor(), pre.to_vec())]);
+    let message = borsh::to_vec(&Wire::Program(Write::Keep)).unwrap();
+    let trace = transact::<G>(&states, seat_of(KEY), &[KEY], message)?;
+    let answer = step_at(&trace, config_actor());
+    assert_eq!(answer.input.from, Some(seat_of(KEY)));
+    Ok(answer.response.clone())
 }
 
 fn set(bytes: &[u8]) -> Wire<Write> {
@@ -347,7 +419,7 @@ fn from_config(bytes: &[u8]) -> Wire<Write> {
     Wire::Program(Write::FromConfig(bytes.to_vec()))
 }
 
-fn watched<G: Roles<Watched, Write>>() {
+fn watched<G: Roles<Watched, Write> + 'static>() {
     let guard = std::any::type_name::<G>();
     let marked = Some(Refusal::of::<Watching>(MARKED));
     let writes = Some(Refusal::of::<Watching>(WRITES_MARK));
@@ -547,7 +619,7 @@ fn both_looks_let_everything_through_by_default() {
     }
 }
 
-fn both_states<G: Roles<Watched, Write>>() {
+fn both_states<G: Roles<Watched, Write> + 'static>() {
     let guard = std::any::type_name::<G>();
     let actor = seat_of(OTHER);
     let kept = at::<G>(actor, None, false, b"KEEP", Write::Keep.into());
@@ -578,18 +650,18 @@ fn a_message_that_runs_no_handler_is_not_watched() {
     let gated = Write::Gated(*b"none").into();
     let hop = at::<WatchSecond>(seat_of(KEY), None, true, b"MARK", gated).unwrap();
     assert_eq!(hop.post_state, None);
-    let request = Wire::Library(LibraryMessage::Clearance(Clearance { authorized: true }));
-    let clearance = at::<WatchSecond>(config_actor(), Some(seat_of(KEY)), false, &marked, request);
-    assert!(clearance.is_ok());
-    let key = [7; 32];
-    let own = Wire::Library(LibraryMessage::Own {
-        role: Watching::NAME.into(),
-        key,
-        message: b"MARK2".to_vec(),
-    });
-    let own_actor = own_actor::<Watching>(config_actor(), &key);
-    let wrote = at::<WatchSecond>(own_actor, Some(config_actor()), false, b"MARK1", own).unwrap();
-    assert_eq!(wrote.post_state, Some(ActorState::from(b"MARK2".to_vec())));
+    assert!(cleared::<WatchSecond>(&marked).is_ok());
+    let mut pre = States::from([(config_actor(), marked)]);
+    pre.insert(watching_s_actor(), b"MARK1".to_vec());
+    let own = Wire::<Write>::op::<Watching>(Op::Own(b"MARK2".to_vec()));
+    let own = borsh::to_vec(&own).unwrap();
+    let trace = transact::<WatchSecond>(&pre, seat_of(KEY), &[KEY], own).unwrap();
+    let wrote = step_at(&trace, watching_s_actor());
+    assert_eq!(wrote.input.from, Some(config_actor()));
+    assert_eq!(
+        wrote.response.post_state,
+        Some(ActorState::from(b"MARK2".to_vec()))
+    );
 }
 
 #[test]
@@ -602,14 +674,7 @@ fn a_message_that_keeps_the_state_and_runs_no_handler_is_not_watched_after() {
     let nominate = Wire::op::<Watching>(Op::Nominate { next: OTHER });
     let operation = at::<Both>(seat_of(KEY), None, true, b"KEEP", nominate);
     assert_eq!(operation.unwrap().post_state, None);
-    let request = Wire::Library(LibraryMessage::Clearance(Clearance { authorized: true }));
-    let clearance = at::<Both>(
-        config_actor(),
-        Some(seat_of(KEY)),
-        false,
-        &config(*b"KEEP"),
-        request,
-    );
+    let clearance = cleared::<Both>(&config(*b"KEEP"));
     assert_eq!(clearance.unwrap().post_state, None);
 }
 
