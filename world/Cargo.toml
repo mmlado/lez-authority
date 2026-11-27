@@ -1,0 +1,13 @@
+[package]
+name = "lez-authority-world"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Test support for lez-authority: programs run in process through LEZ's own executor"
+repository.workspace = true
+
+[dependencies]
+lee_core.workspace = true
+
+[dev-dependencies]
+borsh.workspace = true

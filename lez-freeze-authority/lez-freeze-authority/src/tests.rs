@@ -1,8 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use lee_core::account::{Actor, ActorState};
-use lee_core::program::{PdaSeed, ReceiveInput, Response};
+use lee_core::program::{PdaSeed, ReceiveInput, Response, Transition};
 use lez_authority::{Clearance, LibraryMessage, own_actor, try_guard};
+use lez_authority_world::{Failure, Transaction, World};
 
 use super::*;
 
@@ -51,9 +52,24 @@ enum Message {
     Write(Vec<u8>),
     #[exempt(Freeze)]
     ExemptWrite(Vec<u8>),
+    /// Sends its bytes on to the program's actor at `to`, from wherever it is handled.
+    #[exempt(Freeze)]
+    Pass {
+        to: AccountId,
+        bytes: Vec<u8>,
+    },
 }
 
 fn handle(input: &ReceiveInput, message: Message) -> Response {
+    if let Message::Pass { to, bytes } = message {
+        let mut response = Response::keep_state();
+        response.sync_messages.push(SyncMessage {
+            to: actor(to),
+            message: bytes,
+            pda_seeds: BTreeSet::new(),
+        });
+        return response;
+    }
     if let Message::Count(more) | Message::ExemptCount(more) | Message::Credit(more) = message {
         let count = input.pre_state.first().copied().unwrap_or(0);
         return Response::set_state(vec![count + more]);
@@ -77,7 +93,8 @@ fn handle(input: &ReceiveInput, message: Message) -> Response {
         | Message::ExemptCount(_)
         | Message::Credit(_)
         | Message::Write(_)
-        | Message::ExemptWrite(_) => unreachable!(),
+        | Message::ExemptWrite(_)
+        | Message::Pass { .. } => unreachable!(),
     }
     Response::set_state(borsh::to_vec(&config).unwrap())
 }
@@ -131,59 +148,154 @@ fn at(
     )
 }
 
-/// Every actor's state in one transaction, as the runtime keeps it.
+/// Every actor's state between transactions.
 type States = BTreeMap<Actor, Vec<u8>>;
 
-/// Runs `message` at `to` as the runtime does: the guard over the actor's state, the state it
-/// writes, then each message it sends, depth first. `signers` signed the transaction. The
-/// guard's answer at `to`.
-fn execute(
-    states: &mut States,
-    to: Actor,
-    from: Option<Actor>,
-    signers: &[AccountId],
-    message: Vec<u8>,
-) -> Result<Response, Refusal> {
-    let state = states.get(&to).cloned().unwrap_or_default();
-    let response = guard_at(to, from, signers.contains(&to.account_id), state, message)?;
-    if let Some(post) = &response.post_state {
-        states.insert(to, post.to_vec());
-    }
-    for sent in &response.sync_messages {
-        let _answer = execute(states, sent.to, Some(to), signers, sent.message.clone())?;
-    }
+/// The guard as the program under test.
+fn program(input: &ReceiveInput) -> Result<Response, Refusal> {
+    let wire: Wire<Message> = borsh::from_slice(&input.message).unwrap();
+    try_guard::<(Admin, Freeze), Config, Message>(input, &SEED, InitGate::Deployer, wire, handle)
+}
+
+/// Another program, which sends its message's bytes on to the actor the message names, with
+/// the seed the message carries.
+fn forward(input: &ReceiveInput) -> Result<Response, Refusal> {
+    let (to, bytes, seed): (Actor, Vec<u8>, Option<PdaSeed>) =
+        borsh::from_slice(&input.message).unwrap();
+    let mut response = Response::keep_state();
+    response.sync_messages.push(SyncMessage {
+        to,
+        message: bytes,
+        pda_seeds: seed.into_iter().collect(),
+    });
     Ok(response)
 }
 
-/// `message` at `to` from `from`, signed by `signers`, with all it sends. The states it leaves,
-/// or the refusal that refuses all of it.
+/// The program and seed that derive `account`, when it is one of the PDAs of these tests.
+fn grant(account: AccountId) -> Option<(AccountId, PdaSeed)> {
+    [
+        (MULTISIG, PdaSeed::new([7; 32])),
+        (GOVERNANCE, PdaSeed::new([9; 32])),
+    ]
+    .into_iter()
+    .find(|(program, seed)| AccountId::for_public_pda(program, seed) == account)
+}
+
+/// The marker a freeze operation on one account names, which its transaction must list.
+fn named(message: &[u8]) -> Option<Actor> {
+    let Ok(Wire::<Message>::Library(LibraryMessage::Op {
+        op: Op::Own(op), ..
+    })) = borsh::from_slice(message)
+    else {
+        return None;
+    };
+    match borsh::from_slice(&op) {
+        Ok(FreezeOp::FreezeAccount { account } | FreezeOp::ReleaseAccount { account }) => {
+            Some(marker(account))
+        }
+        _ => None,
+    }
+}
+
+/// One transaction over `pre`: `message` at `root`, signed by `signers`, reaching `reached`
+/// beside the config, the actors that hold state, and each signer's seat and marker. The states
+/// it leaves and every delivery, or the refusal that refuses all of it.
+fn deliver(
+    pre: &States,
+    root: Actor,
+    signers: &[AccountId],
+    message: Vec<u8>,
+    reached: &[Actor],
+) -> Result<(States, Vec<Transition>), Refusal> {
+    let mut world = World::new().program(PROGRAM, program);
+    for other in [ELSEWHERE, MULTISIG, GOVERNANCE] {
+        world = world.program(other, forward);
+    }
+    for (&actor, state) in pre {
+        world = world.starting_with(actor, state.clone());
+    }
+    let mut actors = vec![root, config_actor()];
+    actors.extend(pre.keys());
+    actors.extend(reached);
+    for &signer in signers {
+        actors.extend([actor(signer), marker(signer)]);
+    }
+    let mut evidence = vec![root.account_id, config_actor().account_id];
+    evidence.extend(reached.iter().map(|actor| actor.account_id));
+    let transaction = Transaction {
+        to: root,
+        message,
+        actors,
+        signers: signers.to_vec(),
+        evidence,
+    };
+    let outcome = match world.transact(transaction) {
+        Ok(outcome) => outcome,
+        Err(Failure::Refused(refusal)) => return Err(refusal),
+        Err(Failure::Executor(error)) => panic!("the executor refused the transaction: {error}"),
+        Err(Failure::UnknownProgram(id)) => panic!("the world holds no program {id}"),
+    };
+    let mut states = pre.clone();
+    for step in &outcome.trace {
+        if step.response.post_state.is_some() {
+            let written = step.input.receiver;
+            states.insert(written, world.state(written).to_vec());
+        }
+    }
+    Ok((states, outcome.trace))
+}
+
+/// `message` at `to`, signed by `signers`, with all it sends. The states it leaves, or the
+/// refusal that refuses all of it.
 fn run(
     pre: &States,
     to: Actor,
-    from: Option<Actor>,
     signers: &[AccountId],
     message: Wire<Message>,
 ) -> Result<States, Refusal> {
-    let mut states = pre.clone();
-    let _answer = execute(
-        &mut states,
-        to,
-        from,
-        signers,
-        borsh::to_vec(&message).unwrap(),
-    )?;
-    Ok(states)
+    let message = borsh::to_vec(&message).unwrap();
+    let reached: Vec<Actor> = named(&message).into_iter().collect();
+    deliver(pre, to, signers, message, &reached).map(|(states, _)| states)
 }
 
-/// From `sender`'s seat, reached at top level or through `via`, signed by `sender`.
+/// From `sender`'s seat, reached at top level or through the program `via`. A key signs. A PDA
+/// signs nothing: its program grants its seed, to the seat when it is `via`, and otherwise to
+/// the PDA's actor under `via`, which sends on with the grant it inherited.
 fn transact_via(
     sender: AccountId,
     via: Option<AccountId>,
     pre: &States,
     message: Wire<Message>,
 ) -> Result<States, Refusal> {
-    let from = via.map(|program| Actor::new(program, program));
-    run(pre, actor(sender), from, &[sender], message)
+    let seat = actor(sender);
+    let message = borsh::to_vec(&message).unwrap();
+    let mut reached = vec![seat, marker(sender)];
+    reached.extend(named(&message));
+    let to_seat = |seed: Option<PdaSeed>| borsh::to_vec(&(seat, &message, seed)).unwrap();
+    let (root, signers, sent) = match (via, grant(sender)) {
+        (None, None) => (seat, vec![sender], message.clone()),
+        (None, Some(_)) => (seat, Vec::new(), message.clone()),
+        (Some(via), None) => (Actor::new(via, via), vec![sender], to_seat(None)),
+        (Some(via), Some((program, seed))) if program == via => {
+            (Actor::new(via, via), Vec::new(), to_seat(Some(seed)))
+        }
+        (Some(via), Some((program, seed))) => {
+            let inheriting = Actor::new(sender, via);
+            reached.push(inheriting);
+            let sent = borsh::to_vec(&(inheriting, to_seat(None), Some(seed))).unwrap();
+            (Actor::new(program, program), Vec::new(), sent)
+        }
+    };
+    deliver(pre, root, &signers, sent, &reached).map(|(states, _)| states)
+}
+
+/// How a PDA holder fails away from its program: nobody signs for it at top level, and
+/// another program only inherits its grant.
+fn unreachable_for_a_pda() -> [(Option<AccountId>, AuthorityError); 2] {
+    [
+        (None, AuthorityError::MissingSignature),
+        (Some(ELSEWHERE), AuthorityError::ViaNotAllowed),
+    ]
 }
 
 fn transact(sender: AccountId, pre: &States, message: Wire<Message>) -> Result<States, Refusal> {
@@ -310,7 +422,7 @@ fn strays() -> [Vec<u8>; 5] {
 
 /// `message` sent straight to the config. The config it leaves.
 fn straight(pre: &Config, message: Message) -> Result<Config, Refusal> {
-    run(&world(pre), config_actor(), None, &[], message.into()).map(|states| config_of(&states))
+    run(&world(pre), config_actor(), &[], message.into()).map(|states| config_of(&states))
 }
 
 fn e217() -> Refusal {
@@ -589,12 +701,14 @@ fn an_admin_held_through_a_program_acts_only_through_it() {
     let held = with_vault(holder(AUTHORITY));
     let revoked = send_via(vault, Some(MULTISIG), Some(&held), renounce()).unwrap();
     assert_eq!(revoked, with_vault(AuthoritySlot::Unset));
-    for via in [None, Some(ELSEWHERE)] {
-        assert_eq!(
-            send_via(vault, via, Some(&held), renounce()),
-            Err(Refusal::of::<Admin>(AuthorityError::ViaNotAllowed))
-        );
-    }
+    assert_eq!(
+        send_via(vault, None, Some(&held), renounce()),
+        Err(Refusal::of::<Freeze>(AuthorityError::MissingSignature))
+    );
+    assert_eq!(
+        send_via(vault, Some(ELSEWHERE), Some(&held), renounce()),
+        Err(Refusal::of::<Admin>(AuthorityError::ViaNotAllowed))
+    );
 }
 
 #[test]
@@ -658,10 +772,10 @@ fn a_pda_nominee_proves_itself_with_its_seed_and_then_acts_through_its_program()
     assert_eq!(appointed, config(AuthoritySlot::held(governed)));
     let nominated = send_via(pda, Some(GOVERNANCE), Some(&appointed), nominate(SUCCESSOR)).unwrap();
     assert_eq!(nominated.freeze.authority_slot().nominee(), Some(SUCCESSOR));
-    for via in [None, Some(ELSEWHERE)] {
+    for (via, error) in unreachable_for_a_pda() {
         assert_eq!(
             send_via(pda, via, Some(&appointed), renounce()),
-            Err(Refusal::of::<Freeze>(AuthorityError::ViaNotAllowed))
+            Err(Refusal::of::<Freeze>(error))
         );
     }
 }
@@ -1014,13 +1128,7 @@ fn stray_state_at_a_caller_s_marker_does_not_freeze_it() {
         let mut counted = pre.clone();
         counted.insert(actor(STRANGER), vec![1]);
         assert_eq!(
-            run(
-                &pre,
-                actor(STRANGER),
-                None,
-                &[STRANGER],
-                Message::Count(1).into()
-            ),
+            run(&pre, actor(STRANGER), &[STRANGER], Message::Count(1).into()),
             Ok(counted)
         );
     }
@@ -1103,10 +1211,10 @@ fn a_pda_freeze_authority_freezes_and_releases_through_its_program_only() {
     };
     let frozen_program = send_via(pda, Some(GOVERNANCE), Some(&governed()), freeze()).unwrap();
     assert_eq!(frozen_program, frozen(governed()));
-    for via in [None, Some(ELSEWHERE)] {
+    for (via, error) in unreachable_for_a_pda() {
         assert_eq!(
             send_via(pda, via, Some(&frozen_program), release()),
-            Err(Refusal::of::<Freeze>(AuthorityError::ViaNotAllowed))
+            Err(Refusal::of::<Freeze>(error))
         );
     }
     assert_eq!(
@@ -1114,14 +1222,14 @@ fn a_pda_freeze_authority_freezes_and_releases_through_its_program_only() {
         Ok(governed())
     );
     let one_frozen = with_frozen(&governed(), &[STRANGER]);
-    for via in [None, Some(ELSEWHERE)] {
+    for (via, error) in unreachable_for_a_pda() {
         for (pre, op) in [
             (world(&governed()), freeze_account(STRANGER)),
             (one_frozen.clone(), release_account(STRANGER)),
         ] {
             assert_eq!(
                 transact_via(pda, via, &pre, op),
-                Err(Refusal::of::<Freeze>(AuthorityError::ViaNotAllowed))
+                Err(Refusal::of::<Freeze>(error.clone()))
             );
         }
     }
@@ -1392,7 +1500,7 @@ fn a_message_sent_straight_to_the_config_has_no_caller_to_freeze() {
     ];
     let pre = with_frozen(&config(holder(AUTHORITY)), &accounts);
     assert_eq!(
-        run(&pre, config_actor(), None, &[], Message::Set(3).into()),
+        run(&pre, config_actor(), &[], Message::Set(3).into()),
         Ok(with_frozen(
             &valued(config(holder(AUTHORITY)), 3),
             &accounts
@@ -1541,20 +1649,40 @@ fn elsewhere(
     pre: &States,
     message: Message,
 ) -> Result<Response, Refusal> {
-    let mut states = pre.clone();
     let signers = if authorized {
         vec![to.account_id]
     } else {
         Vec::new()
     };
     let message = borsh::to_vec(&Wire::Program(message)).unwrap();
-    let response = execute(&mut states, to, from, &signers, message)?;
+    let (root, sent) = match from {
+        None => (to, message.clone()),
+        Some(sender) if sender.program_account_id == PROGRAM => {
+            assert_eq!(to.program_account_id, PROGRAM);
+            let pass = Message::Pass {
+                to: to.account_id,
+                bytes: message.clone(),
+            };
+            (sender, borsh::to_vec(&Wire::Program(pass)).unwrap())
+        }
+        Some(sender) => (
+            sender,
+            borsh::to_vec(&(to, &message, None::<PdaSeed>)).unwrap(),
+        ),
+    };
+    let (states, trace) = deliver(pre, root, &signers, sent, &[to])?;
     assert_eq!(
         states.get(&config_actor()),
         pre.get(&config_actor()),
         "a request for clearance writes no config"
     );
-    Ok(response)
+    let step = trace
+        .iter()
+        .find(|step| step.input.receiver == to && step.input.message == message)
+        .expect("the message reached its actor");
+    assert_eq!(step.input.from, from);
+    assert_eq!(step.input.is_authorized, authorized);
+    Ok(step.response.clone())
 }
 
 /// The requests for clearance in `response`.
