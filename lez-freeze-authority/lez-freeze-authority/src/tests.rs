@@ -111,43 +111,6 @@ fn marker(account: AccountId) -> Actor {
     marker_actor(config_actor(), account)
 }
 
-/// The guard at `receiver` over `state`, with nothing it sends delivered.
-fn guard_at(
-    receiver: Actor,
-    from: Option<Actor>,
-    authorized: bool,
-    state: Vec<u8>,
-    message: Vec<u8>,
-) -> Result<Response, Refusal> {
-    let wire: Wire<Message> = borsh::from_slice(&message).unwrap();
-    let input = ReceiveInput {
-        receiver,
-        from,
-        is_authorized: authorized,
-        pre_state: ActorState::from(state),
-        message,
-    };
-    try_guard::<(Admin, Freeze), Config, Message>(&input, &SEED, InitGate::Deployer, wire, handle)
-}
-
-/// [`guard_at`] over the config `pre` holds, or none.
-fn at(
-    receiver: Actor,
-    from: Option<Actor>,
-    authorized: bool,
-    pre: Option<&Config>,
-    message: Wire<Message>,
-) -> Result<Response, Refusal> {
-    let state = pre.map(|config| borsh::to_vec(config).unwrap());
-    guard_at(
-        receiver,
-        from,
-        authorized,
-        state.unwrap_or_default(),
-        borsh::to_vec(&message).unwrap(),
-    )
-}
-
 /// Every actor's state between transactions.
 type States = BTreeMap<Actor, Vec<u8>>;
 
@@ -296,6 +259,24 @@ fn unreachable_for_a_pda() -> [(Option<AccountId>, AuthorityError); 2] {
         (None, AuthorityError::MissingSignature),
         (Some(ELSEWHERE), AuthorityError::ViaNotAllowed),
     ]
+}
+
+/// Every delivery of `message` at `to`, signed by `signers`, in a transaction that passes.
+fn deliveries(
+    pre: &States,
+    to: Actor,
+    signers: &[AccountId],
+    message: Wire<Message>,
+) -> Vec<Transition> {
+    let message = borsh::to_vec(&message).unwrap();
+    let reached: Vec<Actor> = named(&message).into_iter().collect();
+    deliver(pre, to, signers, message, &reached).unwrap().1
+}
+
+/// What the guard returned at `actor`, the first time `trace` reached it.
+fn response_at(trace: &[Transition], actor: Actor) -> &Response {
+    let step = trace.iter().find(|step| step.input.receiver == actor);
+    &step.expect("the transaction reached the actor").response
 }
 
 fn transact(sender: AccountId, pre: &States, message: Wire<Message>) -> Result<States, Refusal> {
@@ -714,16 +695,7 @@ fn an_admin_held_through_a_program_acts_only_through_it() {
 #[test]
 fn a_handler_cannot_touch_any_part_of_the_freeze_slot() {
     let pre = config(holder(AUTHORITY));
-    let at_config = |part| {
-        at(
-            config_actor(),
-            None,
-            false,
-            Some(&pre),
-            Message::Touch(part).into(),
-        )
-        .err()
-    };
+    let at_config = |part| straight(&pre, Message::Touch(part)).err();
     assert_eq!(at_config(2), None);
     for part in 0..2 {
         assert_eq!(
@@ -783,7 +755,7 @@ fn a_pda_nominee_proves_itself_with_its_seed_and_then_acts_through_its_program()
 #[test]
 fn an_unsigned_sender_is_refused_at_its_seat_in_the_freeze_s_name() {
     for message in [nominate(SUCCESSOR), freeze()] {
-        let refused = at(Actor::new(AUTHORITY, PROGRAM), None, false, None, message).err();
+        let refused = run(&States::new(), actor(AUTHORITY), &[], message).err();
         assert_eq!(
             refused,
             Some(Refusal::of::<Freeze>(AuthorityError::MissingSignature))
@@ -846,14 +818,8 @@ fn the_zero_id_cancels_and_the_admin_s_nomination_replaces() {
 #[test]
 fn an_operation_of_the_freeze_role_sent_straight_to_the_config_is_refused_in_its_name() {
     for message in [nominate(SUCCESSOR), freeze()] {
-        let refused = at(
-            config_actor(),
-            None,
-            false,
-            Some(&config(holder(AUTHORITY))),
-            message,
-        )
-        .err();
+        let appointed = world(&config(holder(AUTHORITY)));
+        let refused = run(&appointed, config_actor(), &[], message).err();
         assert_eq!(
             refused,
             Some(Refusal::of::<Freeze>(AuthorityError::NotThroughSeat))
@@ -1394,11 +1360,10 @@ fn after_a_release_every_message_runs_again() {
 #[test]
 fn before_the_admin_s_init_an_exempt_message_at_the_config_is_refused() {
     assert_eq!(
-        at(
+        run(
+            &States::new(),
             config_actor(),
-            None,
-            false,
-            None,
+            &[],
             Message::ExemptSet(1).into()
         )
         .err(),
@@ -1808,24 +1773,28 @@ fn after_a_release_a_message_at_another_actor_runs_again() {
 
 #[test]
 fn before_the_admin_s_init_no_freezable_message_at_another_actor_runs() {
-    let response = at(actor(STRANGER), None, true, None, Message::Count(1).into()).unwrap();
-    assert_eq!(requests(&response), [Clearance { authorized: true }]);
-    let request =
-        Wire::<Message>::Library(LibraryMessage::Clearance(Clearance { authorized: true }));
+    let uninitialized = States::new();
     assert_eq!(
-        at(config_actor(), Some(actor(STRANGER)), false, None, request).err(),
+        elsewhere(
+            actor(STRANGER),
+            None,
+            true,
+            &uninitialized,
+            Message::Count(1)
+        )
+        .err(),
         Some(Refusal::of::<Admin>(AuthorityError::NotInitialized))
     );
 }
 
 #[test]
 fn before_the_admin_s_init_an_exempt_message_at_another_actor_runs() {
-    let response = at(
+    let response = elsewhere(
         actor(STRANGER),
         None,
         true,
-        None,
-        Message::ExemptCount(1).into(),
+        &States::new(),
+        Message::ExemptCount(1),
     )
     .unwrap();
     assert_eq!(response.post_state.as_deref(), Some(&[1u8][..]));
@@ -1834,9 +1803,16 @@ fn before_the_admin_s_init_an_exempt_message_at_another_actor_runs() {
 
 #[test]
 fn a_seat_forwards_a_role_operation_and_a_gated_message_with_no_request_for_clearance() {
-    for (sender, message) in [(AUTHORITY, release()), (ADMIN, Message::AdminSet(1).into())] {
-        let hop = at(actor(sender), None, true, None, message).unwrap();
-        let [sent] = hop.sync_messages.as_slice() else {
+    for (sender, pre, message) in [
+        (AUTHORITY, frozen(config(holder(AUTHORITY))), release()),
+        (
+            ADMIN,
+            config(holder(AUTHORITY)),
+            Message::AdminSet(1).into(),
+        ),
+    ] {
+        let trace = deliveries(&world(&pre), actor(sender), &[sender], message);
+        let [sent] = response_at(&trace, actor(sender)).sync_messages.as_slice() else {
             panic!("one message from the seat");
         };
         assert!(matches!(
@@ -1849,63 +1825,58 @@ fn a_seat_forwards_a_role_operation_and_a_gated_message_with_no_request_for_clea
 #[test]
 fn the_config_asks_the_marker_of_a_caller_it_knows_and_no_other() {
     let check = borsh::to_vec(&MarkerMessage::Check).unwrap();
-    let appointed = config(holder(AUTHORITY));
-    let seat = at(actor(ADMIN), None, true, None, Message::AdminSet(1).into()).unwrap();
-    let hop: Wire<Message> = borsh::from_slice(&seat.sync_messages[0].message).unwrap();
-    let through_seat = at(
-        config_actor(),
-        Some(actor(ADMIN)),
-        false,
-        Some(&appointed),
-        hop,
-    )
-    .unwrap();
-    assert_eq!(through_seat.sync_messages.len(), 1);
-    assert_eq!(marker_messages(&through_seat), [(ADMIN, check.clone())]);
-    for (authorized, asked) in [(true, vec![(STRANGER, check.clone())]), (false, vec![])] {
-        let request = Wire::<Message>::Library(LibraryMessage::Clearance(Clearance { authorized }));
-        let answer = at(
-            config_actor(),
-            Some(actor(STRANGER)),
-            false,
-            Some(&appointed),
-            request,
-        )
-        .unwrap();
+    let appointed = world(&config(holder(AUTHORITY)));
+    let through_seat = deliveries(
+        &appointed,
+        actor(ADMIN),
+        &[ADMIN],
+        Message::AdminSet(1).into(),
+    );
+    let at_config = response_at(&through_seat, config_actor());
+    assert_eq!(at_config.sync_messages.len(), 1);
+    assert_eq!(marker_messages(at_config), [(ADMIN, check.clone())]);
+    for (signers, asked) in [
+        (vec![STRANGER], vec![(STRANGER, check.clone())]),
+        (vec![], vec![]),
+    ] {
+        let asking = deliveries(
+            &appointed,
+            actor(STRANGER),
+            &signers,
+            Message::Count(1).into(),
+        );
+        let answer = response_at(&asking, config_actor());
         assert_eq!(answer.sync_messages.len(), asked.len());
-        assert_eq!(marker_messages(&answer), asked);
+        assert_eq!(marker_messages(answer), asked);
     }
-    let straight = at(
-        config_actor(),
-        None,
-        false,
-        Some(&appointed),
-        Message::Set(1).into(),
-    )
-    .unwrap();
-    assert!(straight.sync_messages.is_empty());
+    let straight = deliveries(&appointed, config_actor(), &[], Message::Set(1).into());
+    assert!(
+        response_at(&straight, config_actor())
+            .sync_messages
+            .is_empty()
+    );
 }
 
 #[test]
 fn a_freeze_operation_on_an_account_asks_its_marker_and_no_other() {
     let appointed = config(holder(AUTHORITY));
-    for (op, message) in [
-        (freeze_account(STRANGER), MarkerMessage::Mark),
-        (release_account(STRANGER), MarkerMessage::Unmark),
+    for (pre, op, message) in [
+        (
+            world(&appointed),
+            freeze_account(STRANGER),
+            MarkerMessage::Mark,
+        ),
+        (
+            with_frozen(&appointed, &[STRANGER]),
+            release_account(STRANGER),
+            MarkerMessage::Unmark,
+        ),
     ] {
-        let seat = at(actor(AUTHORITY), None, true, None, op).unwrap();
-        let hop: Wire<Message> = borsh::from_slice(&seat.sync_messages[0].message).unwrap();
-        let at_config = at(
-            config_actor(),
-            Some(actor(AUTHORITY)),
-            false,
-            Some(&appointed),
-            hop,
-        )
-        .unwrap();
+        let trace = deliveries(&pre, actor(AUTHORITY), &[AUTHORITY], op);
+        let at_config = response_at(&trace, config_actor());
         assert_eq!(at_config.sync_messages.len(), 1);
         assert_eq!(
-            marker_messages(&at_config),
+            marker_messages(at_config),
             [(STRANGER, borsh::to_vec(&message).unwrap())]
         );
     }
@@ -2104,8 +2075,16 @@ fn a_marker_message_that_does_not_decode_is_refused() {
             key: *STRANGER.value(),
             message: bytes,
         });
+        // No transaction carries this: the guard builds every own message itself.
+        let input = ReceiveInput {
+            receiver: marker(STRANGER),
+            from: Some(config_actor()),
+            is_authorized: false,
+            pre_state: ActorState::empty(),
+            message: borsh::to_vec(&own).unwrap(),
+        };
         assert_eq!(
-            at(marker(STRANGER), Some(config_actor()), false, None, own).err(),
+            program(&input).err(),
             Some(Refusal::of::<Freeze>(AuthorityError::MessageDoesNotDecode))
         );
     }
