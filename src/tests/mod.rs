@@ -681,7 +681,7 @@ enum Ask {
     GatedMarking,
 }
 
-// By hand: it runs under guards that do not list both of its roles.
+// By hand: it exempts a role that refuses nothing, which the derive rejects.
 impl Gated for Ask {
     fn needs<R: Role>(&self) -> bool {
         matches!(self, Ask::GatedMarking)
